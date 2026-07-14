@@ -67,3 +67,19 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store
+
+# Claude Code local config
+.claude/
+
+# Editors
+.vscode/
+.idea/
+.clangd/
