@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Ch7 build delta vs Ch6: nothing structural. Struct support lives in the
+# existing files; StructType is hand-written C++ (no TypeDef TableGen).
+
 # ---------------------------------------------------------------------------
 # Standalone-mode boilerplate.
 # Runs only when this chapter is configured directly (cmake -S Ch7).

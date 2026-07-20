@@ -2,10 +2,10 @@
 
 > Goal: extend the Toy language and dialect with a user-defined `struct` type — touching every layer of the compiler from the lexer down to constant folding — following the official tutorial: [Toy Tutorial Ch-7: Adding a Composite Type to Toy](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-7/).
 
-**Chapter code:** `/Users/roy/study/mlir/toy/Ch7/` (an out-of-tree CMake project, *not* built inside llvm-project — built as part of the `toy/` superbuild). Built against Homebrew LLVM/MLIR 20 on macOS.
+**Chapter code:** `Ch7/` — one chapter of the out-of-tree **superbuild** described in the top-level [README](../README.md#repository-layout).
 
 ```bash
-cd /Users/roy/study/mlir/toy
+cd toy
 ./build.sh ch7                # configure once + incremental build → ./build/bin/toyc-ch7
 ./run.sh ch7                  # runs struct-codegen.toy with -emit=mlir
 ```
@@ -80,7 +80,9 @@ access ::= expr `.` identifier
 
 ### 2.2 Lexer: one new token
 
-`/Users/roy/study/mlir/toy/Ch7/include/toy/Lexer.h` adds a single keyword token:
+`include/toy/Lexer.h` adds a single keyword token:
+
+***include/toy/Lexer.h***
 
 ```cpp
 enum Token : int {
@@ -102,9 +104,11 @@ That is the *entire* lexer change. `.`, `{`, `}` were already single-character t
 
 ### 2.3 AST: records, struct definitions, struct literals
 
-`/Users/roy/study/mlir/toy/Ch7/include/toy/AST.h` makes three structural changes:
+`include/toy/AST.h` makes three structural changes:
 
 **(a) `VarType` gains a `name`.** Previously a variable's type was just an optional shape. Now it may instead be a *named* struct type:
+
+***include/toy/AST.h***
 
 ```cpp
 /// A variable type with either name or shape information.
@@ -151,9 +155,11 @@ Note there is **no dedicated AST node for member access** — `value.a` is parse
 
 ### 2.4 Parser changes
 
-All in `/Users/roy/study/mlir/toy/Ch7/include/toy/Parser.h`.
+All in `include/toy/Parser.h`.
 
 **Top-level dispatch** (`parseModule`) now accepts both records:
+
+***include/toy/Parser.h***
 
 ```cpp
 case tok_def:
@@ -262,7 +268,12 @@ So `transpose(value.a) * transpose(value.b)` parses with `.` bound before `*`, n
 
 ### 2.5 Seeing it: the AST dump
 
-Real output from this repo (from `toy/`: `./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-ast.toy -emit=ast`, abbreviated):
+Real output from this repo (abbreviated):
+
+```bash
+cd toy
+./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-ast.toy -emit=ast 2>&1
+```
 
 ```
 Module:
@@ -313,7 +324,9 @@ Builtin types like `RankedTensorType` already have storage; a struct type parame
 
 ### 3.1 StructTypeStorage
 
-From `/Users/roy/study/mlir/toy/Ch7/mlir/Dialect.cpp` (namespace `mlir::toy::detail`):
+In namespace `mlir::toy::detail`:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 /// This class represents the internal storage of the Toy `StructType`.
@@ -377,7 +390,7 @@ The pieces and what the `StorageUniquer` does with each:
 
 ### 3.2 The public StructType class
 
-From `/Users/roy/study/mlir/toy/Ch7/include/toy/Dialect.h`:
+***include/toy/Dialect.h***
 
 ```cpp
 /// All derived types in MLIR must inherit from the CRTP class
@@ -407,7 +420,9 @@ public:
 
 (The `name` constant is required in recent MLIR for types defined without ODS — it is used e.g. by the bytecode reader/writer and debugging utilities. The upstream tutorial predates it slightly; with LLVM/MLIR 20 you need it.)
 
-And the implementation in `Dialect.cpp`:
+And the implementation:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 StructType StructType::get(llvm::ArrayRef<mlir::Type> elementTypes) {
@@ -432,6 +447,8 @@ llvm::ArrayRef<mlir::Type> StructType::getElementTypes() {
 
 The dialect must own the type so the context knows `!toy.…` types exist:
 
+***mlir/Dialect.cpp***
+
 ```cpp
 void ToyDialect::initialize() {
   addOperations<
@@ -448,6 +465,8 @@ void ToyDialect::initialize() {
 ## 4. Custom Type Parsing & Printing
 
 `StructType` now exists in memory, but the textual IR needs a syntax for it. Types from a dialect print as `!<dialect>.<contents>`; the dialect provides the `<contents>` part via `parseType`/`printType` hooks. In ODS (`Ops.td`) we ask TableGen to declare them:
+
+***include/toy/Ops.td***
 
 ```tablegen
 def Toy_Dialect : Dialect {
@@ -472,7 +491,9 @@ struct-type ::= `struct` `<` type (`,` type)* `>`
 
 so a two-member struct of unranked tensors prints as `!toy.struct<tensor<*xf64>, tensor<*xf64>>` (the `!toy.` prefix is added by MLIR; the hook only handles what follows).
 
-### 4.1 Parsing (Dialect.cpp)
+### 4.1 Parsing
+
+***mlir/Dialect.cpp***
 
 ```cpp
 /// Parse an instance of a type registered to the toy dialect.
@@ -517,7 +538,9 @@ Points worth noticing:
 - All parser methods return `ParseResult` (a `LogicalResult` that converts to `true` **on failure**), which is what makes the `if (a || b)` chaining idiom work.
 - The parser is also a **verifier**: it rejects `!toy.struct<i32>` with a proper source-located diagnostic. Structs may nest (`!toy.struct<!toy.struct<...>, tensor<*xf64>>` — exercised by `struct-opt.mlir`).
 
-### 4.2 Printing (Dialect.cpp)
+### 4.2 Printing
+
+***mlir/Dialect.cpp***
 
 ```cpp
 /// Print an instance of a type registered to the toy dialect.
@@ -539,6 +562,8 @@ void ToyDialect::printType(mlir::Type type,
 
 Ops defined in TableGen constrain operands/results with type-constraint definitions. To let ODS talk about our C++-defined type, `Ops.td` wraps it in a `DialectType` predicate:
 
+***include/toy/Ops.td***
+
 ```tablegen
 // Provide a definition for the Toy StructType for use in ODS. This allows for
 // using StructType in a similar way to Tensor or MemRef. We use `DialectType`
@@ -559,7 +584,9 @@ def Toy_Type : AnyTypeOf<[F64Tensor, Toy_StructType]>;
 
 ### 5.1 `toy.struct_constant`
 
-Materializes a struct *value* from a compile-time attribute. Since a struct is an ordered collection, its payload is an `ArrayAttr` — one attribute per member (a `DenseElementsAttr` for tensor members, or a nested `ArrayAttr` for nested structs). ODS (`/Users/roy/study/mlir/toy/Ch7/include/toy/Ops.td`):
+Materializes a struct *value* from a compile-time attribute. Since a struct is an ordered collection, its payload is an `ArrayAttr` — one attribute per member (a `DenseElementsAttr` for tensor members, or a nested `ArrayAttr` for nested structs).
+
+***include/toy/Ops.td***
 
 ```tablegen
 def StructConstantOp : Toy_Op<"struct_constant", [ConstantLike, Pure]> {
@@ -589,6 +616,8 @@ def StructConstantOp : Toy_Op<"struct_constant", [ConstantLike, Pure]> {
 The `ConstantLike` trait matters: it tells generic MLIR utilities (folding, `matchPattern(m_Constant())`, the operation folder) that this op produces a constant whose value is its single attribute.
 
 Its verifier reuses the same recursive helper as `toy.constant` — `verifyConstantForType` in `Dialect.cpp` — which structurally checks the attribute against the result type:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 static llvm::LogicalResult verifyConstantForType(mlir::Type type,
@@ -624,6 +653,8 @@ llvm::LogicalResult StructConstantOp::verify() {
 
 Extracts the N-th member of a struct value:
 
+***include/toy/Ops.td***
+
 ```tablegen
 def StructAccessOp : Toy_Op<"struct_access", [Pure]> {
   let summary = "struct access";
@@ -653,6 +684,8 @@ def StructAccessOp : Toy_Op<"struct_access", [Pure]> {
 `Pure` (no side effects, speculatable) is essential: it allows dead `struct_access` ops to be erased and lets the canonicalizer/folder move and fold them freely.
 
 The custom builder derives the result type from the input struct, so callers pass only `(value, index)`:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 void StructAccessOp::build(mlir::OpBuilder &b, mlir::OperationState &state,
@@ -690,6 +723,8 @@ llvm::LogicalResult StructAccessOp::verify() {
 
 Structs must flow through returns and calls, so their operand constraints widen from `F64Tensor` to `Toy_Type`:
 
+***include/toy/Ops.td***
+
 ```tablegen
 def ReturnOp : Toy_Op<"return", [Pure, HasParent<"FuncOp">, Terminator]> {
   ...
@@ -720,11 +755,13 @@ def GenericCallOp : Toy_Op<"generic_call",
 
 ## 6. MLIRGen for Structs
 
-All in `/Users/roy/study/mlir/toy/Ch7/mlir/MLIRGen.cpp`.
+All in `mlir/MLIRGen.cpp`.
 
 ### 6.1 Tracking struct declarations
 
 MLIRGen needs to map *names* (`"Struct"`, member `"a"`) to MLIR types and member indices, so it keeps the AST around:
+
+***mlir/MLIRGen.cpp***
 
 ```cpp
 /// A mapping for named struct types to the underlying MLIR type and the
@@ -774,6 +811,8 @@ Since members have no shape info, each member's type is `tensor<*xf64>` (or a ne
 
 Type resolution now checks the name first:
 
+***mlir/MLIRGen.cpp***
+
 ```cpp
 /// Build an MLIR type from a Toy AST variable type (forward to the generic
 /// getType for non-struct types).
@@ -796,6 +835,8 @@ This is used for function prototypes too — which is how `!toy.struct<...>` end
 ### 6.3 Struct literals → `ArrayAttr` + `StructConstantOp`
 
 A struct literal becomes a single constant op whose attribute is built recursively (numbers/tensor literals → `DenseElementsAttr`, nested struct literals → nested `ArrayAttr`):
+
+***mlir/MLIRGen.cpp***
 
 ```cpp
 /// Emit a constant for a struct literal. It will be emitted as an array of
@@ -840,6 +881,8 @@ mlir::Value mlirGen(StructLiteralExprAST &lit) {
 ### 6.4 Member access → member index → `StructAccessOp`
 
 Remember: the AST for `value.a` is `BinaryExprAST('.')` with a variable on each side. MLIRGen must turn the *name* `a` into a *number* (its position in the struct). Two helpers do this by walking the AST/declarations:
+
+***mlir/MLIRGen.cpp***
 
 ```cpp
 /// Return the struct type that is the result of the given expression, or null
@@ -926,7 +969,9 @@ OpFoldResult FooOp::fold(FoldAdaptor adaptor);
 
 `FoldAdaptor` is a generated adaptor class that mirrors the op's operands, but where each operand accessor (e.g. `adaptor.getInput()`) returns an **`Attribute`** instead of a `Value`: the constant value of that operand *if* the operand is currently known to be constant, or null otherwise. The returned `OpFoldResult` is either an `Attribute` (constant result) or a `Value` (replace with an existing SSA value); returning null means "cannot fold".
 
-The three implementations live in `/Users/roy/study/mlir/toy/Ch7/mlir/ToyCombine.cpp`:
+The three implementations:
+
+***mlir/ToyCombine.cpp***
 
 ```cpp
 /// Fold constants.
@@ -952,7 +997,9 @@ OpFoldResult StructAccessOp::fold(FoldAdaptor adaptor) {
 
 ### 7.2 `materializeConstant`: turning attributes back into ops
 
-When a fold returns an `Attribute`, the operation folder must create an op that produces that constant as an SSA value — but *which* op? That's dialect-specific, so MLIR asks the dialect via the hook enabled by `let hasConstantMaterializer = 1;`. In `Dialect.cpp`:
+When a fold returns an `Attribute`, the operation folder must create an op that produces that constant as an SSA value — but *which* op? That's dialect-specific, so MLIR asks the dialect via the hook enabled by `let hasConstantMaterializer = 1;`.
+
+***mlir/Dialect.cpp***
 
 ```cpp
 mlir::Operation *ToyDialect::materializeConstant(mlir::OpBuilder &builder,
@@ -983,6 +1030,8 @@ Result: **no `!toy.struct`, no `struct_constant`, no `struct_access` remain** �
 
 The `struct-opt.mlir` test exercises the nested-struct fold path directly at the IR level:
 
+***test_Example/Toy/Ch7/struct-opt.mlir***
+
 ```mlir
 // Input (hand-written IR with a struct nested inside a struct):
 toy.func @main() {
@@ -996,7 +1045,12 @@ toy.func @main() {
 }
 ```
 
-Real output of `./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-opt.mlir -emit=mlir -opt` (run from `toy/`):
+Real output:
+
+```bash
+cd toy
+./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-opt.mlir -emit=mlir -opt 2>&1
+```
 
 ```mlir
 module {
@@ -1014,97 +1068,15 @@ Two chained accesses through a nested struct fold all the way down to one tensor
 
 ## 8. Building — Out-of-Tree CMake Specifics
 
-Unlike the upstream tutorial (which builds inside `llvm-project/mlir/examples`), this repo builds Ch7 **out-of-tree** against an installed Homebrew MLIR, as one chapter of a **CMake superbuild** rooted at `/Users/roy/study/mlir/toy/`:
+The shared machinery (superbuild, presets, dual-mode guard, `build.sh`) is documented in the top-level [README, "The build system"](../README.md#the-build-system). Build this chapter with `cd toy && ./build.sh ch7` → `./build/bin/toyc-ch7`.
 
-- Repo root: `/Users/roy/study/mlir`; superbuild: `/Users/roy/study/mlir/toy/`; chapter sources: `/Users/roy/study/mlir/toy/Ch7/`
-- `MLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir` (set by the CMake preset)
-- Compiler: `/opt/homebrew/opt/llvm@20/bin/clang++` (set by the preset)
-- Generator: Ninja, on macOS (Darwin)
+### 8.1 What Chapter 7 adds to the build: nothing structural
 
-### 8.1 The superbuild
+[`Ch7/CMakeLists.txt`](CMakeLists.txt) is Ch6's build with the chapter number changed: the same `MLIR_ENABLE_EXECUTION_ENGINE` guard, the same three IncGen dependencies (`ToyCh7OpsIncGen`, `ToyCh7ShapeInferenceInterfaceIncGen`, `ToyCh7CombineIncGen`), the same source list, and the same shared-only link line:
 
-The top-level `/Users/roy/study/mlir/toy/CMakeLists.txt` does the LLVM/MLIR boilerplate **once** for all chapters — `find_package(MLIR/LLVM)`, `include(TableGen)`, `include(AddLLVM)`, `include(AddMLIR)`, `include(HandleLLVMOptions)`, the include directories — then sets `CMAKE_RUNTIME_OUTPUT_DIRECTORY` to `build/bin/` and pulls in every chapter with `add_subdirectory(Ch1)` … `add_subdirectory(Ch7)`. All binaries land in `toy/build/bin/toyc-ch{1..7}`.
-
-Compiler, generator, and `MLIR_DIR`/`LLVM_DIR` come from `/Users/roy/study/mlir/toy/CMakePresets.json` (preset `default`: Ninja, Release, Homebrew llvm@20), so building is just:
-
-```bash
-cd /Users/roy/study/mlir/toy
-./build.sh ch7          # configure once (cmake --preset default) + build only toyc-ch7
-./build.sh              # build everything (all chapters)
-./build.sh ch7 --fresh  # wipe build/ first, then rebuild
-```
-
-`build.sh` is **incremental**: it configures only when `build/CMakeCache.txt` is missing (Ninja re-runs CMake automatically when a `CMakeLists.txt` changes) and otherwise just runs `cmake --build --preset default [--target toyc-ch7]`. Only `--fresh` does an `rm -rf build`.
-
-### 8.2 The dual-mode chapter CMakeLists
-
-`/Users/roy/study/mlir/toy/Ch7/CMakeLists.txt` still works **standalone** too. Its boilerplate is wrapped in a guard that only fires when the chapter is the top-level project:
+***CMakeLists.txt***
 
 ```cmake
-# Standalone-mode boilerplate.
-# Runs only when this chapter is configured directly (cmake -S Ch7).
-# In the superbuild (cmake -S toy/), ../CMakeLists.txt already did all this.
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(toy-ch7)
-
-  find_package(MLIR REQUIRED CONFIG)   # via MLIR_DIR from the CMake cache/env
-  find_package(LLVM REQUIRED CONFIG)
-
-  list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-  list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-  include(TableGen)                    # defines mlir_tablegen()
-  include(AddLLVM)
-  include(AddMLIR)
-  include(HandleLLVMOptions)
-
-  include_directories(${MLIR_INCLUDE_DIRS} ${LLVM_INCLUDE_DIRS})
-endif()
-```
-
-So a standalone configure of just this chapter is still possible:
-
-```bash
-cd /Users/roy/study/mlir/toy
-cmake -S Ch7 -B Ch7/build -G Ninja \
-      -DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir
-cmake --build Ch7/build      # → Ch7/build/toyc-ch7
-```
-
-(`run.sh` even falls back to `Ch7/build/toyc-ch7` if the superbuild binary is absent.)
-
-The chapter targets below the guard are unchanged from a per-chapter build:
-
-```cmake
-# This chapter depends on JIT support enabled.
-if(NOT MLIR_ENABLE_EXECUTION_ENGINE)
-  return()
-endif()
-
-include_directories(include)
-add_subdirectory(include)               # runs TableGen on Ops.td + interfaces
-
-set(LLVM_TARGET_DEFINITIONS mlir/ToyCombine.td)
-mlir_tablegen(ToyCombine.inc -gen-rewriters)
-add_public_tablegen_target(ToyCh7CombineIncGen)
-
-add_executable(toyc-ch7
-  toyc.cpp
-  parser/AST.cpp
-  mlir/MLIRGen.cpp
-  mlir/Dialect.cpp
-  mlir/LowerToAffineLoops.cpp
-  mlir/LowerToLLVM.cpp
-  mlir/ShapeInferencePass.cpp
-  mlir/ToyCombine.cpp
-  )
-
-add_dependencies(toyc-ch7 ToyCh7ShapeInferenceInterfaceIncGen)
-add_dependencies(toyc-ch7 ToyCh7OpsIncGen)
-add_dependencies(toyc-ch7 ToyCh7CombineIncGen)
-
-include_directories(${CMAKE_CURRENT_BINARY_DIR})
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/include/)
-
 # NOTE: link ONLY shared MLIR/LLVM libraries here. Mixing static .a archives
 # with libMLIR.dylib causes TypeID duplication and runtime segfaults — see
 # ../Ch6/MLIR_LINKING_PITFALL.md.
@@ -1115,20 +1087,22 @@ target_link_libraries(toyc-ch7
     )
 ```
 
-Notes:
+The linking discipline is inherited from Chapter 6 — see [Ch6 §5.1](../Ch6/README.md#51-the-link-line--the-part-that-matters) and [MLIR_LINKING_PITFALL.md](../Ch6/MLIR_LINKING_PITFALL.md) for the full story.
 
-- `include/toy/CMakeLists.txt` runs the TableGen steps for `Ops.td` (`-gen-op-decls/-gen-op-defs/-gen-dialect-decls/-gen-dialect-defs`) and the shape-inference interface, producing `Ops.h.inc`, `Ops.cpp.inc`, `Dialect.h.inc`, `Dialect.cpp.inc` under the chapter's binary dir (`build/Ch7/include/toy/` in the superbuild).
-- There is **no TableGen step for the struct type** — `StructType` is entirely hand-written C++ in this chapter (later MLIR practice would use ODS `TypeDef`, but the point of Ch7 is to show the raw storage mechanism).
-- Linking against the monolithic `MLIR` dylib plus `MLIRExecutionEngineShared` keeps the out-of-tree link line trivial compared to enumerating dozens of static component libraries.
-- The file set is Ch6's plus nothing new: struct support lives in the already-existing files.
+Points worth noting precisely *because* nothing changed:
+
+- **There is no TableGen step for the struct type.** `StructType` is entirely hand-written C++ in this chapter (§3) — the TableGen'd `.inc` files still cover only ops, dialect, and the shape-inference interface. (Later MLIR practice would define the type declaratively with ODS `TypeDef`; Ch7 deliberately shows the raw storage mechanism underneath.)
+- **All struct support lives in already-existing files** (`Ops.td`, `Dialect.cpp`, `MLIRGen.cpp`, the parser) — extending a dialect with a new type is a *content* change, not a build change.
 
 ---
 
 ## 9. Running and Testing
 
-Test inputs live in `/Users/roy/study/mlir/test_Example/Toy/Ch7/` (`struct-ast.toy`, `struct-codegen.toy`, `struct-opt.mlir`, `jit.toy`, plus the tensor tests carried over from earlier chapters). All commands below are run from the superbuild root `/Users/roy/study/mlir/toy/` — which is also where `./run.sh ch7` runs them — so the binary is `./build/bin/toyc-ch7` and the tests sit at `../test_Example/Toy/Ch7/`.
+Test inputs live in `test_Example/Toy/Ch7/` (`struct-ast.toy`, `struct-codegen.toy`, `struct-opt.mlir`, `jit.toy`, plus the tensor tests carried over from earlier chapters). All commands below are run from the superbuild root `toy/` — which is also where `./run.sh ch7` runs them — so the binary is `./build/bin/toyc-ch7` and the tests sit at `../test_Example/Toy/Ch7/`.
 
-### 9.1 The input program (`struct-codegen.toy`)
+### 9.1 The input program
+
+***test_Example/Toy/Ch7/struct-codegen.toy***
 
 ```
 struct Struct {
@@ -1154,7 +1128,13 @@ def main() {
 
 ### 9.2 `-emit=mlir`: structs in the IR
 
-`cd /Users/roy/study/mlir/toy && ./run.sh ch7` (equivalently, from `toy/`: `./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir`) — real output:
+```bash
+cd toy
+./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir 2>&1
+# or via the wrapper: ./run.sh ch7
+```
+
+Real output:
 
 ```mlir
 module {
@@ -1184,7 +1164,11 @@ Reading it against the sections above:
 
 ### 9.3 `-emit=mlir -opt`: the struct disappears
 
-`./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir -opt` — real output:
+```bash
+./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir -opt 2>&1
+```
+
+Real output:
 
 ```mlir
 module {
@@ -1212,7 +1196,13 @@ This is exactly the inline → fold(`StructAccessOp::fold` + `materializeConstan
 
 ### 9.4 `-emit=jit`: the unchanged backend still works
 
-Because the optimized module is pure tensor IR, the whole Ch6 pipeline (Affine → LLVM dialect → LLVM IR → ExecutionEngine) runs unmodified. Real output of `./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/jit.toy -emit=jit`:
+Because the optimized module is pure tensor IR, the whole Ch6 pipeline (Affine → LLVM dialect → LLVM IR → ExecutionEngine) runs unmodified:
+
+```bash
+./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/jit.toy -emit=jit
+```
+
+Real output:
 
 ```
 1.000000 2.000000
@@ -1226,6 +1216,18 @@ Because the optimized module is pure tensor IR, the whole Ch6 pipeline (Affine �
 - **`struct-ast.toy`** + `-emit=ast` — verifies the parser/AST additions (`Struct:` record, `BinOp: .`, `VarDecl value<Struct>`, `Struct Literal:`); output shown in §2.5.
 - **`struct-opt.mlir`** + `-emit=mlir -opt` — round-trips the custom type syntax through `parseType` (it is hand-written `.mlir`, so the *parser* is exercised, not MLIRGen) and checks nested-struct folding; output shown in §7.3.
 - The remaining files (`codegen.toy`, `ast.toy`, `affine-lowering.mlir`, `llvm-lowering.mlir`, `shape_inference.mlir`, `transpose_transpose.toy`, `trivial_reshape.toy`, `scalar.toy`, `empty.toy`, `invalid.mlir`) are the Ch1–Ch6 regression suite, proving the struct work didn't break anything.
+
+### 9.6 The ecosystem view: what happens to a custom *type* outside its dialect
+
+Ch2 §7.6 showed that stock `mlir-opt` handles unknown *ops* in generic form. This chapter adds a custom **type** — does `!toy.struct<...>` survive too? Try it (verified on this machine):
+
+```bash
+./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir -mlir-print-op-generic 2>&1 \
+  | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
+# → parses and reprints, !toy.struct<tensor<*xf64>, tensor<*xf64>> intact
+```
+
+It round-trips — but for a different reason than the ops do. Generic *op* form is dialect-free structure, whereas `!toy.struct<tensor<*xf64>, tensor<*xf64>>` is still Toy's custom syntax; under `-allow-unregistered-dialect` MLIR parses it as an **opaque type** — the body between `<...>` is kept as an uninterpreted string and printed back verbatim. Everything this chapter implemented for the type is inert in that tool: no `parseType` structural validation (§4.1's diagnostics), no `StructType::getElementTypes()`, no verifier checking that `struct_access`'s index is in bounds, and of course no folding. The type has become a label rather than a semantic object — which is exactly the boundary between *carrying* IR and *understanding* it. Any tool that must reason about `!toy.struct` (verify it, fold it, lower it) has to link the dialect; a tool that merely transports IR does not. That division of labor is why MLIR text files are a viable interchange format between tools that know different subsets of the dialects involved.
 
 ---
 
@@ -1257,12 +1259,12 @@ Because the optimized module is pure tensor IR, the whole Ch6 pipeline (Affine �
 ## Links
 
 - Official doc: [MLIR Toy Tutorial, Chapter 7 — Adding a Composite Type to Toy](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-7/)
-- Previous chapter: [Chapter 6: Lowering to LLVM & JIT](6_lowering_to_llvm_jit.md)
-- Back to: [README](README.md)
+- Previous chapter: [Chapter 6: Lowering to LLVM & JIT](../Ch6/README.md)
+- Back to: [README](../README.md)
 - Code referenced in this chapter:
-  - `/Users/roy/study/mlir/toy/Ch7/include/toy/Lexer.h`, `AST.h`, `Parser.h` — language front-end
-  - `/Users/roy/study/mlir/toy/Ch7/include/toy/Dialect.h`, `/Users/roy/study/mlir/toy/Ch7/mlir/Dialect.cpp` — `StructType`, storage, parse/print, verifiers, `materializeConstant`
-  - `/Users/roy/study/mlir/toy/Ch7/include/toy/Ops.td` — ODS: `Toy_StructType`, `Toy_Type`, `StructConstantOp`, `StructAccessOp`
-  - `/Users/roy/study/mlir/toy/Ch7/mlir/ToyCombine.cpp` — fold implementations
-  - `/Users/roy/study/mlir/toy/Ch7/mlir/MLIRGen.cpp` — struct codegen
-  - `/Users/roy/study/mlir/test_Example/Toy/Ch7/` — `struct-ast.toy`, `struct-codegen.toy`, `struct-opt.mlir`, `jit.toy`
+  - `include/toy/Lexer.h`, `AST.h`, `Parser.h` — language front-end
+  - `include/toy/Dialect.h`, `mlir/Dialect.cpp` — `StructType`, storage, parse/print, verifiers, `materializeConstant`
+  - `include/toy/Ops.td` — ODS: `Toy_StructType`, `Toy_Type`, `StructConstantOp`, `StructAccessOp`
+  - `mlir/ToyCombine.cpp` — fold implementations
+  - `mlir/MLIRGen.cpp` — struct codegen
+  - `test_Example/Toy/Ch7/` — `struct-ast.toy`, `struct-codegen.toy`, `struct-opt.mlir`, `jit.toy`

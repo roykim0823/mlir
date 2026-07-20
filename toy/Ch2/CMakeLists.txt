@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Ch2 build delta vs Ch1: TableGen enters the build. include/toy/CMakeLists.txt
+# runs mlir-tblgen over Ops.td (target ToyCh2OpsIncGen); the explicit
+# add_dependencies below guards the compile-before-generate race.
+# Links the monolithic Homebrew MLIR + LLVM dylibs from here on.
+
 # ---------------------------------------------------------------------------
 # Standalone-mode boilerplate.
 # Runs only when this chapter is configured directly (cmake -S Ch2).

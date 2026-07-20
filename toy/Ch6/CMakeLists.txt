@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Ch6 build delta vs Ch5: + mlir/LowerToLLVM.cpp; requires
+# MLIR_ENABLE_EXECUTION_ENGINE; the link line changes to SHARED-ONLY
+# MLIR + MLIRExecutionEngineShared — see MLIR_LINKING_PITFALL.md.
+
 # ---------------------------------------------------------------------------
 # Standalone-mode boilerplate.
 # Runs only when this chapter is configured directly (cmake -S Ch6).

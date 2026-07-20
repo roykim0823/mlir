@@ -3,7 +3,7 @@
 > **Goal:** Use the high-level semantics preserved by the Toy dialect to implement optimizations that would be impossible (or very hard) after lowering — first with a hand-written C++ `RewritePattern`, then with declarative TableGen rewrite rules (DRR) — and hook them all into MLIR's canonicalization framework.
 > Official docs: [Toy Tutorial Ch.3 — High-level Language-Specific Analysis and Transformation](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-3/)
 
-**Chapter code:** `/Users/roy/study/mlir/toy/Ch3/` (an out-of-tree CMake project built against Homebrew LLVM/MLIR 20 — *not* inside `llvm-project`). It is one chapter of the **superbuild** rooted at `/Users/roy/study/mlir/toy/`: `cd toy && ./build.sh ch3` produces `build/bin/toyc-ch3`.
+**Chapter code:** `Ch3/` — one chapter of the out-of-tree **superbuild** described in the top-level [README](../README.md#repository-layout): `cd toy && ./build.sh ch3` produces `build/bin/toyc-ch3`.
 
 ---
 
@@ -77,7 +77,7 @@ Both feed the same engine: the **greedy pattern rewrite driver** that powers MLI
 
 ### 2.1 The pattern itself
 
-The full C++ pattern lives in `/Users/roy/study/mlir/toy/Ch3/mlir/ToyCombine.cpp`:
+***mlir/ToyCombine.cpp***
 
 ```cpp
 /// This is an example of a c++ rewrite pattern for the TransposeOp. It
@@ -126,7 +126,9 @@ The actual rewrite is one line: `rewriter.replaceOp(op, {transposeInputOp.getOpe
 
 ### 2.2 Registering with the canonicalization framework
 
-A pattern is inert until something runs it. Rather than writing a bespoke pass, we register it as a **canonicalization pattern** on `TransposeOp` (also in `ToyCombine.cpp`):
+A pattern is inert until something runs it. Rather than writing a bespoke pass, we register it as a **canonicalization pattern** on `TransposeOp`:
+
+***mlir/ToyCombine.cpp***
 
 ```cpp
 /// Register our patterns as "canonicalization" patterns on the TransposeOp so
@@ -141,7 +143,9 @@ void TransposeOp::getCanonicalizationPatterns(RewritePatternSet &results,
 
 ### 2.3 `hasCanonicalizer = 1` in ODS
 
-In `/Users/roy/study/mlir/toy/Ch3/include/toy/Ops.td`, both ops that own patterns set the flag:
+Both ops that own patterns set the flag:
+
+***include/toy/Ops.td***
 
 ```tablegen
 def TransposeOp : Toy_Op<"transpose", [Pure]> {
@@ -160,6 +164,8 @@ def ReshapeOp : Toy_Op<"reshape", [Pure]> {
 ```
 
 `let hasCanonicalizer = 1;` makes `mlir-tblgen -gen-op-decls` emit the declaration into the generated header (you can verify this in `build/Ch3/include/toy/Ops.h.inc` under the superbuild tree — or `Ch3/build/include/toy/Ops.h.inc` in a standalone chapter build):
+
+***build/Ch3/include/toy/Ops.h.inc***
 
 ```cpp
 static void getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
@@ -182,6 +188,8 @@ toy.func @transpose_transpose(%arg0: tensor<*xf64>) -> tensor<*xf64> {
 Why doesn't the canonicalizer just delete `%0`? Because it is **conservative about side effects**. An unregistered or effect-opaque op might print, write memory, or trap — deleting it because its result is unused would be wrong. The canonicalizer only performs dead code elimination on ops it can *prove* are side-effect free.
 
 The fix is to declare it. In `Ops.td`, `toy.transpose` (and in this repo's Ch3, essentially every value-producing Toy op) carries the **`Pure`** trait:
+
+***include/toy/Ops.td***
 
 ```tablegen
 def TransposeOp : Toy_Op<"transpose", [Pure]> {
@@ -217,6 +225,8 @@ Writing `matchAndRewrite` by hand is flexible but verbose — the transpose patt
 
 The general record shape (quoted in the header comment of our `.td` file):
 
+***mlir/ToyCombine.td***
+
 ```tablegen
 class Pattern<
    dag sourcePattern, list<dag> resultPatterns,
@@ -228,7 +238,7 @@ class Pattern<
 
 `Pat<src, result>` is the common single-result shorthand for `Pattern<src, [result]>`.
 
-This chapter defines three reshape patterns in `/Users/roy/study/mlir/toy/Ch3/mlir/ToyCombine.td`. The file starts with the necessary includes — `PatternBase.td` for the DRR infrastructure and our own `Ops.td` so the op records (`ReshapeOp`, `ConstantOp`) are visible:
+This chapter defines three reshape patterns in `mlir/ToyCombine.td`. The file starts with the necessary includes — `PatternBase.td` for the DRR infrastructure and our own `Ops.td` so the op records (`ReshapeOp`, `ConstantOp`) are visible:
 
 ```tablegen
 include "mlir/IR/PatternBase.td"
@@ -236,6 +246,8 @@ include "toy/Ops.td"
 ```
 
 ### 3.1 Basic pattern: `Reshape(Reshape(x)) = Reshape(x)`
+
+***mlir/ToyCombine.td***
 
 ```tablegen
 // Reshape(Reshape(x)) = Reshape(x)
@@ -250,6 +262,8 @@ That's the entire `transpose`-style pattern in two lines instead of twenty-five.
 ### 3.2 Pattern with `NativeCodeCall`: `Reshape(Constant(x)) = x'`
 
 Some rewrites need real C++ in the middle. `NativeCodeCall` embeds an expression (or helper-function call) whose `$0, $1, ...` placeholders are substituted with bound entities:
+
+***mlir/ToyCombine.td***
 
 ```tablegen
 // Reshape(Constant(x)) = x'
@@ -272,6 +286,8 @@ Net effect: a reshape applied to a compile-time constant is folded away entirely
 
 The third pattern only applies conditionally — a reshape whose input and output types are already identical is a no-op:
 
+***mlir/ToyCombine.td***
+
 ```tablegen
 // Reshape(x) = x, where input and output shapes are identical
 def TypesAreIdentical : Constraint<CPred<"$0.getType() == $1.getType()">>;
@@ -286,9 +302,11 @@ Three new concepts:
 - **`(replaceWithValue $arg)`** — a special DRR directive: instead of building a new op, replace all uses of the matched root with an *existing* value. This is the DRR analogue of `rewriter.replaceOp(op, existingValue)`.
 - The third `Pat` argument is the **constraint list**, applied on top of structural matching.
 
-### 3.4 What TableGen generates: `ToyCombine.inc`
+### 3.4 What TableGen generates
 
 The build runs `mlir-tblgen -gen-rewriters` over `ToyCombine.td`, producing `build/Ch3/ToyCombine.inc` in the superbuild tree (~176 lines of C++ from ~30 lines of TableGen). It contains one `RewritePattern` subclass per `Pat` record. Here is the actual generated match section for `FoldConstantReshapeOptPattern` (lightly trimmed):
+
+***build/Ch3/ToyCombine.inc***
 
 ```cpp
 struct FoldConstantReshapeOptPattern : public ::mlir::RewritePattern {
@@ -343,6 +361,8 @@ Things worth noticing in the generated code:
 
 `ToyCombine.cpp` includes the generated file inside an anonymous namespace and registers the three classes as `ReshapeOp` canonicalization patterns:
 
+***mlir/ToyCombine.cpp***
+
 ```cpp
 namespace {
 /// Include the patterns defined in the Declarative Rewrite framework.
@@ -364,9 +384,11 @@ From the canonicalizer's point of view there is no difference between hand-writt
 
 ## 4. Wiring the Pass Pipeline
 
-Patterns run inside a pass; passes run inside a `PassManager`. The driver changes are in `/Users/roy/study/mlir/toy/Ch3/toyc.cpp`.
+Patterns run inside a pass; passes run inside a `PassManager`. The driver changes are in `toyc.cpp`.
 
 First, a new command-line flag:
+
+***toyc.cpp***
 
 ```cpp
 static cl::opt<bool> enableOpt("opt", cl::desc("Enable optimizations"));
@@ -413,104 +435,15 @@ Since the pipeline is only constructed under `if (enableOpt)`, running without `
 
 ## 5. Building
 
-### 5.1 Superbuild layout
+The shared machinery (superbuild, presets, dual-mode guard, `build.sh`) is documented in the top-level [README, "The build system"](../README.md#the-build-system); the TableGen wiring pattern is explained in [Ch2 §6.1](../Ch2/README.md). Build this chapter with `cd toy && ./build.sh ch3` → `./build/bin/toyc-ch3`.
 
-This repo builds all chapters as **one out-of-tree CMake superbuild** rooted at `/Users/roy/study/mlir/toy/`, against Homebrew LLVM/MLIR 20 — not with the in-tree `add_toy_chapter` machinery from `llvm-project/mlir/examples`. The top-level `/Users/roy/study/mlir/toy/CMakeLists.txt` runs the shared boilerplate exactly once and then pulls in every chapter:
+### 5.1 What Chapter 3 adds to the build: a second TableGen flavor
 
-```cmake
-project(toy-tutorial)
+Relative to Chapter 2, [`Ch3/CMakeLists.txt`](CMakeLists.txt) adds exactly three things:
 
-find_package(MLIR REQUIRED CONFIG)
-find_package(LLVM REQUIRED CONFIG)
+1. **The rewriter TableGen step** — a new kind of generator for the DRR patterns of §3:
 
-list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-
-include(TableGen)
-include(AddLLVM)
-include(AddMLIR)
-include(HandleLLVMOptions)
-
-include_directories(${MLIR_INCLUDE_DIRS}
-                    ${LLVM_INCLUDE_DIRS})
-
-# Collect every chapter binary in build/bin/ instead of build/ChN/.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-add_subdirectory(Ch1)
-# ... Ch2 through Ch6 ...
-add_subdirectory(Ch7)
-```
-
-Configuration comes from `/Users/roy/study/mlir/toy/CMakePresets.json`: a single `default` preset selecting **Ninja**, **Release**, the Homebrew `llvm@20` compilers (`/opt/homebrew/opt/llvm@20/bin/clang` / `clang++` — matching the libraries avoids C++ ABI mismatches with Apple's system clang), and `MLIR_DIR`/`LLVM_DIR` pointing at `/opt/homebrew/opt/llvm@20/lib/cmake/{mlir,llvm}`. `cmake --preset default` is therefore the entire configure step; the build tree is `toy/build/`.
-
-### 5.2 The dual-mode chapter CMakeLists
-
-Each `ChN/CMakeLists.txt` is now **dual-mode**: its find-package/include boilerplate is wrapped in a guard that fires only when the chapter is configured directly, so under the superbuild the chapter just defines its targets against the already-configured parent. The real `/Users/roy/study/mlir/toy/Ch3/CMakeLists.txt`:
-
-```cmake
-cmake_minimum_required(VERSION 3.20)
-
-# ---------------------------------------------------------------------------
-# Standalone-mode boilerplate.
-# Runs only when this chapter is configured directly (cmake -S Ch3).
-# In the superbuild (cmake -S toy/), ../CMakeLists.txt already did all this.
-# ---------------------------------------------------------------------------
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "macOS Deployment Target" FORCE)
-  endif()
-  project(toy-ch3)
-
-  find_package(MLIR REQUIRED CONFIG)
-  find_package(LLVM REQUIRED CONFIG)
-
-  list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-  list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-
-  include(TableGen)
-  include(AddLLVM)
-  include(AddMLIR)
-  include(HandleLLVMOptions)
-
-  include_directories(${MLIR_INCLUDE_DIRS}
-                      ${LLVM_INCLUDE_DIRS})
-endif()
-
-# ---------------------------------------------------------------------------
-# Chapter targets
-# ---------------------------------------------------------------------------
-include_directories(include)
-add_subdirectory(include)
-
-set(LLVM_TARGET_DEFINITIONS mlir/ToyCombine.td)
-mlir_tablegen(ToyCombine.inc -gen-rewriters)
-add_public_tablegen_target(ToyCh3CombineIncGen)
-
-add_executable(toyc-ch3
-  toyc.cpp
-  parser/AST.cpp
-  mlir/MLIRGen.cpp
-  mlir/Dialect.cpp
-  mlir/ToyCombine.cpp
-  )
-
-add_dependencies(toyc-ch3 ToyCh3OpsIncGen)
-add_dependencies(toyc-ch3 ToyCh3CombineIncGen)
-
-include_directories(${CMAKE_CURRENT_BINARY_DIR})
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/include/)
-
-target_link_libraries(toyc-ch3
-  PRIVATE
-    MLIR                      # libMLIR.dylib (all dialects, passes, conversions)
-    LLVM                      # libLLVM.dylib (all targets, all components)
-    )
-```
-
-The Chapter-3-specific additions relative to Chapter 2:
-
-1. **The rewriter TableGen step:**
+   ***CMakeLists.txt***
 
    ```cmake
    set(LLVM_TARGET_DEFINITIONS mlir/ToyCombine.td)
@@ -518,62 +451,33 @@ The Chapter-3-specific additions relative to Chapter 2:
    add_public_tablegen_target(ToyCh3CombineIncGen)
    ```
 
-   `LLVM_TARGET_DEFINITIONS` names the `.td` input; `mlir_tablegen(... -gen-rewriters)` invokes `mlir-tblgen --gen-rewriters` to emit `ToyCombine.inc` into the chapter's binary directory — `toy/build/Ch3/ToyCombine.inc` in the superbuild (or `Ch3/build/ToyCombine.inc` when the chapter is configured standalone); `add_public_tablegen_target` wraps the generated file in a named target so the executable can depend on it and the file is guaranteed to exist before `ToyCombine.cpp` compiles (`add_dependencies(toyc-ch3 ToyCh3CombineIncGen)`).
-
-   This sits alongside the Chapter-2 op generation in `include/toy/CMakeLists.txt` (`-gen-op-decls`, `-gen-op-defs`, `-gen-dialect-decls`, `-gen-dialect-defs` → target `ToyCh3OpsIncGen`).
+   `mlir_tablegen(... -gen-rewriters)` invokes `mlir-tblgen --gen-rewriters` to emit `ToyCombine.inc` into the chapter's binary directory — `toy/build/Ch3/ToyCombine.inc` in the superbuild (or `Ch3/build/ToyCombine.inc` standalone). `add_public_tablegen_target` wraps it in a named target so the file is guaranteed to exist before `ToyCombine.cpp` compiles (`add_dependencies(toyc-ch3 ToyCh3CombineIncGen)`). This sits alongside the Chapter-2 op generation (`ToyCh3OpsIncGen`).
 
 2. **New source file** `mlir/ToyCombine.cpp` in the executable.
 
-3. **Include path for generated files:** `include_directories(${CMAKE_CURRENT_BINARY_DIR})` is what lets `#include "ToyCombine.inc"` resolve, since the `.inc` lands at the root of the chapter's binary directory (`build/Ch3/`). `CMAKE_CURRENT_BINARY_DIR` points to the right place in both superbuild and standalone modes — that's part of what makes the dual-mode file work unchanged.
+3. **Include path for generated files:** `include_directories(${CMAKE_CURRENT_BINARY_DIR})` is what lets `#include "ToyCombine.inc"` resolve, since this `.inc` lands at the *root* of the chapter's binary directory (unlike the op/dialect `.inc` files under `include/toy/`). `CMAKE_CURRENT_BINARY_DIR` points to the right place in both superbuild and standalone modes.
 
-Linking is intentionally coarse: the monolithic Homebrew `libMLIR.dylib` / `libLLVM.dylib` shared libraries, which already contain the canonicalizer pass, greedy driver, and everything else. In-tree builds would instead list fine-grained components (`MLIRPass`, `MLIRTransforms`, `MLIRSupport`, ...).
-
-### 5.3 build.sh and everyday workflow
-
-The per-chapter `ChN/build.sh` scripts are gone. The shared `/Users/roy/study/mlir/toy/build.sh` wraps the preset in an **incremental** workflow: it configures only when `build/CMakeCache.txt` is missing (afterwards Ninja re-runs CMake automatically whenever a `CMakeLists.txt` changes), and only wipes the tree when you ask with `--fresh`:
-
-```bash
-cd /Users/roy/study/mlir/toy
-./build.sh ch3          # build only toyc-ch3
-./build.sh              # build all chapters (same as ./build.sh all)
-./build.sh ch3 --fresh  # rm -rf build/ first, then reconfigure + build toyc-ch3
-# Binary: ./build/bin/toyc-ch3
-```
-
-Under the hood a chapter build is just `cmake --build --preset default --target toyc-ch3`, so `ninja -C build toyc-ch3` works equally well.
-
-**Standalone mode still works.** Thanks to the `CMAKE_SOURCE_DIR` guard in §5.2, a single chapter can be configured on its own — you just have to supply what the preset would have (the preset lives at the superbuild root, so it doesn't apply here):
-
-```bash
-cd /Users/roy/study/mlir/toy
-cmake -S Ch3 -B Ch3/build -G Ninja \
-      -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang \
-      -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++ \
-      -DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir \
-      -DLLVM_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/llvm
-cmake --build Ch3/build
-# Binary: Ch3/build/toyc-ch3  (run.sh falls back to this path if build/bin/ has no toyc-ch3)
-```
+Linking is unchanged: the monolithic Homebrew `libMLIR.dylib` / `libLLVM.dylib`, which already contain the canonicalizer pass and greedy driver (in-tree builds would add `MLIRPass`, `MLIRTransforms`, ... as components instead).
 
 ---
 
 ## 6. Running and Testing
 
-The shared `/Users/roy/study/mlir/toy/run.sh` runs both chapter test files with optimization enabled:
+The shared `toy/run.sh` runs both chapter test files with optimization enabled:
 
 ```bash
-cd /Users/roy/study/mlir/toy
+cd toy
 ./run.sh ch3
 # which executes (from toy/):
 #   ./build/bin/toyc-ch3 ../test_Example/Toy/Ch3/transpose_transpose.toy -emit=mlir -opt
 #   ./build/bin/toyc-ch3 ../test_Example/Toy/Ch3/trivial_reshape.toy -emit=mlir -opt
 ```
 
-Test inputs live in `/Users/roy/study/mlir/test_Example/Toy/Ch3/`. All outputs below are **real captured output** from this repo's `toyc-ch3` binary.
+Test inputs live in `test_Example/Toy/Ch3/`. All outputs below are **real captured output** from this repo's `toyc-ch3` binary.
 
 ### 6.1 `transpose_transpose.toy`
 
-Source (`test_Example/Toy/Ch3/transpose_transpose.toy`):
+***test_Example/Toy/Ch3/transpose_transpose.toy***
 
 ```
 # User defined generic function that operates on unknown shaped arguments
@@ -588,7 +492,12 @@ def main() {
 }
 ```
 
-**Without `-opt`** (`./build/bin/toyc-ch3 ../test_Example/Toy/Ch3/transpose_transpose.toy -emit=mlir`):
+**Without `-opt`:**
+
+```bash
+cd toy
+./build/bin/toyc-ch3 ../test_Example/Toy/Ch3/transpose_transpose.toy -emit=mlir 2>&1
+```
 
 ```mlir
 module {
@@ -608,6 +517,10 @@ module {
 ```
 
 **With `-opt`:**
+
+```bash
+./build/bin/toyc-ch3 ../test_Example/Toy/Ch3/transpose_transpose.toy -emit=mlir -opt 2>&1
+```
 
 ```mlir
 module {
@@ -631,7 +544,7 @@ What fired, and why:
 
 ### 6.2 `trivial_reshape.toy`
 
-Source (`test_Example/Toy/Ch3/trivial_reshape.toy`):
+***test_Example/Toy/Ch3/trivial_reshape.toy***
 
 ```
 def main() {
@@ -645,6 +558,10 @@ def main() {
 Each `var x<2,1> = ...` declaration forces a reshape to `tensor<2x1xf64>`, so MLIRGen emits a chain of three reshapes off one constant.
 
 **Without `-opt`:**
+
+```bash
+./build/bin/toyc-ch3 ../test_Example/Toy/Ch3/trivial_reshape.toy -emit=mlir 2>&1
+```
 
 ```mlir
 module {
@@ -660,6 +577,10 @@ module {
 ```
 
 **With `-opt`:**
+
+```bash
+./build/bin/toyc-ch3 ../test_Example/Toy/Ch3/trivial_reshape.toy -emit=mlir -opt 2>&1
+```
 
 ```mlir
 module {
@@ -682,7 +603,7 @@ Final IR: one constant, one print — no runtime reshaping work at all.
 ### 6.3 One-shot verification
 
 ```bash
-cd /Users/roy/study/mlir/toy
+cd toy
 ./build.sh ch3      # configure (first time only) + incremental build → ./build/bin/toyc-ch3
 ./run.sh ch3        # both tests with -emit=mlir -opt
 
@@ -701,6 +622,15 @@ Debugging tip: because `main()` registers the pass-manager CL options and `dumpM
 ```
 
 The `.toy` files also carry `# RUN:` / `# CHECK:` lines for LLVM `lit`/`FileCheck`-style testing; in this repo we exercise them directly via `run.sh` rather than through a lit harness.
+
+**The ecosystem view.** `-opt` is nothing Toy-specific — it just adds MLIR's *generic* `createCanonicalizerPass()` to the pass manager (section 4). You can make the stage boundary visible by splitting frontend and optimizer into two processes connected by textual IR, exactly how `mlir-opt`-based pipelines compose (`toyc-ch3` plays the role of the project's own `foo-opt`, since stock `mlir-opt` doesn't link the Toy dialect — see Ch2 §7.6):
+
+```bash
+./build/bin/toyc-ch3 ../test_Example/Toy/Ch3/trivial_reshape.toy -emit=mlir 2>&1 \
+  | ./build/bin/toyc-ch3 - -x mlir -emit=mlir -opt 2>&1
+# → same optimized module as the single -opt invocation: textual IR is the
+#   ecosystem's stable interface between compilation stages.
+```
 
 ---
 
@@ -722,7 +652,7 @@ The `.toy` files also carry `# RUN:` / `# CHECK:` lines for LLVM `lit`/`FileChec
 - **Rewrites must keep consumers legal.** Replacing a value changes the operand of its users (`toy.return`, `toy.generic_call`, ...). Here the permissive `tensor<*xf64>`/`F64Tensor` typing makes that safe; with stricter ops you must check result/operand type compatibility in the match (as `RedundantReshapeOptPattern` does via `TypesAreIdentical`).
 - **Don't create infinite ping-pong.** The greedy driver iterates to fixpoint; a pair of patterns like `A→B` and `B→A` (or a pattern that "rewrites" an op to an identical op) never converges and hits the iteration limit. Each rewrite should strictly reduce some measure (op count, pattern-match opportunities).
 - **Op ordering / traversal is not yours to control.** Patterns fire in benefit order per op, over a worklist in unspecified overall order. Never write a pattern whose correctness depends on another pattern having already run — each must be independently sound; only *convergence* composes them.
-- **Canonicalization is local.** It didn't remove the `toy.generic_call` round-trip in `main` — interprocedural wins need the inliner and shape inference, which is exactly where [Chapter 4](4_generic_transformation_interfaces.md) picks up.
+- **Canonicalization is local.** It didn't remove the `toy.generic_call` round-trip in `main` — interprocedural wins need the inliner and shape inference, which is exactly where [Chapter 4](../Ch4/README.md) picks up.
 - **DRR `$arg` on a `ConstantOp` binds the attribute, not a value.** Because ODS declares `ConstantOp`'s input as an attribute, DRR captures a `DenseElementsAttr` — which is why `ReshapeConstant` can call `.reshape(...)` on it directly. Misreading bound-entity kinds ($value vs $attribute) is a classic DRR stumble.
 - **LLVM version drift.** Against LLVM/MLIR 20: the trait is `Pure` (not `NoSideEffect`), casts are `::llvm::cast<ShapedType>(v)` (not `v.cast<ShapedType>()`), and `matchAndRewrite` returns `llvm::LogicalResult`. Older tutorial snippets found online may not compile as-is.
 
@@ -732,6 +662,6 @@ The `.toy` files also carry `# RUN:` / `# CHECK:` lines for LLVM `lit`/`FileChec
 
 - Official doc: [MLIR Toy Tutorial Ch.3 — High-level Language-Specific Analysis and Transformation](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-3/)
 - DRR reference: [Table-driven Declarative Rewrite Rules](https://mlir.llvm.org/docs/DeclarativeRewrites/) · [Pattern Rewriting](https://mlir.llvm.org/docs/PatternRewriter/) · [Operation Canonicalization](https://mlir.llvm.org/docs/Canonicalization/)
-- Previous: [Chapter 2 — Emitting Basic MLIR](2_emitting_basic_mlir.md)
-- Next: [Chapter 4 — Enabling Generic Transformation with Interfaces](4_generic_transformation_interfaces.md)
-- Index: [README](README.md)
+- Previous: [Chapter 2 — Emitting Basic MLIR](../Ch2/README.md)
+- Next: [Chapter 4 — Enabling Generic Transformation with Interfaces](../Ch4/README.md)
+- Index: [README](../README.md)

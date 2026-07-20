@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Ch4 build delta vs Ch3: + op-interface TableGen — ShapeInferenceInterface.td →
+# -gen-op-interface-decls/-defs (target ToyCh4ShapeInferenceInterfaceIncGen);
+# + mlir/ShapeInferencePass.cpp in the executable.
+
 # ---------------------------------------------------------------------------
 # Standalone-mode boilerplate.
 # Runs only when this chapter is configured directly (cmake -S Ch4).

@@ -16,26 +16,7 @@ In Chapter 1 we built a classic frontend: a lexer, a parser, and an AST for the 
 
 Why bother? LLVM IR has a *fixed* instruction set at a *fixed* (low) level of abstraction. By the time you have lowered `transpose(a) * transpose(b)` to LLVM IR, the fact that these were tensor transposes is gone — you cannot easily write an optimization like "transpose(transpose(x)) = x" anymore. MLIR is different: it ships with very few built-in operations and instead lets *you* define new operations, types, and attributes at whatever level of abstraction fits your problem. Multiple frontends can then share one infrastructure for analyses, transformations, tracking source locations, multithreaded compilation, and so on, instead of each reinventing its own IR. Toy's dialect is a *high-level*, tensor-based IR that preserves language semantics so the next chapters can do meaningful optimizations on it.
 
-### Where things live in this repo
-
-This chapter is part of an **out-of-tree CMake superbuild** at `toy/` that covers all chapters (Ch1–Ch7) — it is *not* built inside `llvm-project` like the upstream tutorial. It links against a prebuilt Homebrew LLVM/MLIR 20. Each `ChN/` also still configures as a standalone project (see section 6).
-
-| Path | Purpose |
-|---|---|
-| `/Users/roy/study/mlir/toy/Ch2/toyc.cpp` | Compiler driver (`-emit=ast` / `-emit=mlir`) |
-| `/Users/roy/study/mlir/toy/Ch2/include/toy/Ops.td` | ODS (TableGen) definitions: dialect + 9 ops |
-| `/Users/roy/study/mlir/toy/Ch2/include/toy/Dialect.h` | Pulls in the TableGen-generated declarations |
-| `/Users/roy/study/mlir/toy/Ch2/mlir/Dialect.cpp` | Dialect init + hand-written verifiers/builders/parsers/printers |
-| `/Users/roy/study/mlir/toy/Ch2/mlir/MLIRGen.cpp` | AST → MLIR emission |
-| `/Users/roy/study/mlir/toy/Ch2/include/toy/MLIRGen.h` | Public `mlirGen()` entry point |
-| `/Users/roy/study/mlir/toy/CMakeLists.txt`, `CMakePresets.json` | Superbuild top level: finds MLIR/LLVM once, adds `Ch1`…`Ch7`; preset pins Ninja/compilers/`MLIR_DIR` |
-| `/Users/roy/study/mlir/toy/Ch2/CMakeLists.txt` | Chapter build wiring (TableGen + executable); dual-mode: superbuild or standalone |
-| `/Users/roy/study/mlir/toy/Ch2/codegen.toy` | The example program compiled in this chapter |
-| `/Users/roy/study/mlir/toy/build.sh`, `run.sh` | Build / run scripts for all chapters (`./build.sh ch2`, `./run.sh ch2`) |
-| `/Users/roy/study/mlir/toy/Ch2/run_mlir-tblgen.sh` | TableGen-inspection script |
-| `/Users/roy/study/mlir/test_Example/Toy/Ch2/` | Extra test inputs (`ast.toy`, `codegen.toy`, `empty.toy`, `scalar.toy`, `invalid.mlir`) |
-
-Lexer/Parser/AST files (`Lexer.h`, `Parser.h`, `AST.h`, `parser/AST.cpp`) are carried over unchanged from Chapter 1.
+The lexer, parser, and AST (`Lexer.h`, `Parser.h`, `AST.h`, `parser/AST.cpp`) are carried over unchanged from Chapter 1; everything new — the ODS definitions in `include/toy/Ops.td`, the dialect implementation in `mlir/Dialect.cpp`, the emitter in `mlir/MLIRGen.cpp`, the extended driver, and the TableGen build wiring — is introduced in the section that explains it. (For the repo-wide layout and build setup, see the top-level [README](../README.md#repository-layout).)
 
 ---
 
@@ -54,7 +35,7 @@ Dissect a Toy operation in its *generic* textual form:
 
 | Piece | Meaning |
 |---|---|
-| `%t_tensor` | The name of the (single) **result** — an SSA **value** defined by this op. A `#` suffix can index into multiple results. This name is only a convenience of the printer; it is not part of the in-memory IR. |
+| `%t_tensor` | The name of the (single) **result** — an SSA **value** defined by this op. The `%` sigil marks every SSA value name. An op can also define *multiple* results under one name (`%res:2 = ...`), which are then referenced individually with a `#` suffix (`%res#0`, `%res#1`) — not needed in Toy, where every op has at most one result. This name is only a convenience of the printer; it is not part of the in-memory IR. |
 | `"toy.transpose"` | The **operation name**. Always a unique string prefixed by the **dialect** namespace (`toy.`) followed by the mnemonic (`transpose`). |
 | `(%tensor)` | The list of zero or more **operands** — SSA values produced by other operations or block arguments. |
 | `{inplace = true}` | A dictionary of zero or more **attributes**: named, *constant* (compile-time) data. Attributes are how MLIR attaches data where a runtime variable is never allowed. |
@@ -142,7 +123,9 @@ public:
 
 ### 3.2 What this repo actually does: ODS
 
-Instead of writing that boilerplate, we declare the dialect in TableGen and let `mlir-tblgen` generate the C++. This is the very top of [`include/toy/Ops.td`](Ch2/include/toy/Ops.td):
+Instead of writing that boilerplate, we declare the dialect in TableGen and let `mlir-tblgen` generate the C++. This is the very top of the file:
+
+***include/toy/Ops.td***
 
 ```tablegen
 include "mlir/IR/OpBase.td"
@@ -159,6 +142,8 @@ def Toy_Dialect : Dialect {
 ```
 
 (The upstream doc's version also sets `summary`/`description`, which feed generated documentation; this repo keeps it minimal.) Running the `-gen-dialect-decls` generator on this yields exactly the boilerplate class — here is the **actual generated code** from `Ch2/build/dialect-decls.inc` in this repo (produced by `run_mlir-tblgen.sh`, section 6.3):
+
+***build/dialect-decls.inc***
 
 ```cpp
 namespace mlir {
@@ -180,7 +165,9 @@ public:
 MLIR_DECLARE_EXPLICIT_TYPE_ID(::mlir::toy::ToyDialect)
 ```
 
-and `-gen-dialect-defs` produces the constructor/destructor (`Ch2/build/dialect-defs.inc`):
+and `-gen-dialect-defs` produces the constructor/destructor:
+
+***build/dialect-defs.inc***
 
 ```cpp
 MLIR_DEFINE_EXPLICIT_TYPE_ID(::mlir::toy::ToyDialect)
@@ -194,7 +181,9 @@ ToyDialect::ToyDialect(::mlir::MLIRContext *context)
 ToyDialect::~ToyDialect() = default;
 ```
 
-The only thing left for us to write by hand is `initialize()`, which registers the operations. In [`mlir/Dialect.cpp`](Ch2/mlir/Dialect.cpp):
+The only thing left for us to write by hand is `initialize()`, which registers the operations:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 #include "toy/Dialect.cpp.inc"   // the generated ctor/dtor above
@@ -213,7 +202,9 @@ void ToyDialect::initialize() {
 
 ### 3.3 Header wiring and loading the dialect
 
-[`include/toy/Dialect.h`](Ch2/include/toy/Dialect.h) is nothing but glue — it includes interface headers the generated code needs, then the two generated declaration files:
+`Dialect.h` is nothing but glue — it includes interface headers the generated code needs, then the two generated declaration files:
+
+***include/toy/Dialect.h***
 
 ```cpp
 #include "mlir/Bytecode/BytecodeOpInterface.h"
@@ -231,7 +222,9 @@ void ToyDialect::initialize() {
 #include "toy/Ops.h.inc"
 ```
 
-Finally, a dialect must be **loaded into the `MLIRContext`** before use — contexts only load the builtin dialect by default. The driver [`toyc.cpp`](Ch2/toyc.cpp) does this first thing in `dumpMLIR()`:
+Finally, a dialect must be **loaded into the `MLIRContext`** before use — contexts only load the builtin dialect by default. The driver does this first thing in `dumpMLIR()`:
+
+***toyc.cpp***
 
 ```cpp
 mlir::MLIRContext context;
@@ -288,6 +281,8 @@ That is a lot of mechanical code per op — and it drifts as MLIR's APIs evolve.
 
 All Toy ops share a base class that fixes the parent dialect:
 
+***include/toy/Ops.td***
+
 ```tablegen
 // Base class for toy dialect operations. Provides: the parent dialect,
 // the mnemonic (op name without the "toy." prefix), and a trait list.
@@ -295,7 +290,7 @@ class Toy_Op<string mnemonic, list<Trait> traits = []> :
     Op<Toy_Dialect, mnemonic, traits>;
 ```
 
-Now let's go through **every op** in [`Ops.td`](Ch2/include/toy/Ops.td). Watch for the recurring `let` fields:
+Now let's go through **every op** in [`Ops.td`](include/toy/Ops.td). Watch for the recurring `let` fields:
 
 - `arguments` / `results` — typed operands **and attributes** in, values out. Naming an entity (`$value`) generates accessors (`getValue()`).
 - `builders` — extra convenience `build()` overloads.
@@ -303,6 +298,8 @@ Now let's go through **every op** in [`Ops.td`](Ch2/include/toy/Ops.td). Watch f
 - `assemblyFormat` / `hasCustomAssemblyFormat` — declarative vs. hand-written pretty syntax.
 
 ### 4.2 `ConstantOp` — attributes, builders, verifier, custom parser/printer
+
+***include/toy/Ops.td***
 
 ```tablegen
 def ConstantOp : Toy_Op<"constant", [Pure]> {
@@ -339,7 +336,9 @@ Point by point:
 - **Trait `Pure`**: no side effects → dead constants can be eliminated, and it enables later folding/CSE. (This subsumes what older MLIR called `NoSideEffect`.)
 - **`arguments`**: note that an *attribute* (`F64ElementsAttr`, a dense array of f64) appears in `ins` right alongside where operands would go. ODS distinguishes them by the constraint kind. Naming it `$value` generates `getValue()` returning `DenseElementsAttr`.
 - **`results`**: `F64Tensor` is a predefined ODS constraint = "tensor of 64-bit float". Because it's unnamed, only generic result accessors are produced.
-- **`builders`**: `builder.create<ConstantOp>(loc, ...)` needs a matching `build()` overload. ODS always auto-generates one taking (result types, operands, attributes); here we add two ergonomic ones. The first has an *inline* body (the `[{ ... }]` blob — `$_builder`/`$_state` are magic substitutions) that delegates to the autogenerated overload. The second only *declares* `build(OpBuilder&, OperationState&, double)`; its body lives in `Dialect.cpp`:
+- **`builders`**: `builder.create<ConstantOp>(loc, ...)` needs a matching `build()` overload. ODS always auto-generates one taking (result types, operands, attributes); here we add two ergonomic ones. The first has an *inline* body (the `[{ ... }]` blob — `$_builder`/`$_state` are magic substitutions) that delegates to the autogenerated overload. The second only *declares* `build(OpBuilder&, OperationState&, double)`; its body lives in the dialect implementation:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 void ConstantOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
@@ -403,6 +402,8 @@ Note the trick in `parse`: the result type is not written in the pretty syntax a
 
 ### 4.3 `AddOp` and `MulOp` — binary element-wise ops with a shared hand-written syntax
 
+***include/toy/Ops.td***
+
 ```tablegen
 def AddOp : Toy_Op<"add"> {
   let summary = "element-wise addition operation";
@@ -414,6 +415,8 @@ def AddOp : Toy_Op<"add"> {
 ```
 
 (`MulOp` = same shape with mnemonic `"mul"`.) The declared two-`Value` builder is implemented in `Dialect.cpp`; note that the result type is *always* an unranked `tensor<*xf64>` at this stage — shape inference is Chapter 4's job:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 void AddOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
@@ -447,6 +450,8 @@ The matching `parseBinaryOp` parses exactly two operands, an optional attribute 
 ### 4.4 `FuncOp` — regions, interfaces, `extraClassDeclaration`
 
 The most structurally interesting op — this *is* a Toy function:
+
+***include/toy/Ops.td***
 
 ```tablegen
 def FuncOp : Toy_Op<"func", [
@@ -484,7 +489,9 @@ def FuncOp : Toy_Op<"func", [
 - **`IsolatedFromAbove`**: the region body may not reference SSA values defined *outside* the op. This is what lets MLIR process functions in parallel safely.
 - **`arguments`**: all attributes here, no operands! `sym_name` (the `@main` symbol), the `FunctionType` stored as a type attribute, plus optional per-argument/result attribute arrays required by `FunctionOpInterface`.
 - **`regions`**: one region named `$body` — the function body. This generates `getBody()`.
-- **`skipDefaultBuilders = 1`**: suppress the autogenerated builders (they wouldn't create the entry block properly); our single custom builder in `Dialect.cpp` leans on the interface helper:
+- **`skipDefaultBuilders = 1`**: suppress the autogenerated builders (they wouldn't create the entry block properly); our single custom builder leans on the interface helper:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 void FuncOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
@@ -499,6 +506,8 @@ void FuncOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
 - The custom `parse`/`print` also just delegate to library helpers (`mlir::function_interface_impl::parseFunctionOp` / `printFunctionOp`), which is why `toy.func @main() { ... }` looks exactly like `func.func`.
 
 ### 4.5 `GenericCallOp` — symbol references and variadic operands
+
+***include/toy/Ops.td***
 
 ```tablegen
 def GenericCallOp : Toy_Op<"generic_call"> {
@@ -522,7 +531,9 @@ def GenericCallOp : Toy_Op<"generic_call"> {
 - **`FlatSymbolRefAttr`**: the callee is not an SSA operand but a *symbol reference* (`@multiply_transpose`) — calls reference functions by name, resolved through MLIR's symbol tables.
 - **`Variadic<F64Tensor>`**: any number of tensor operands.
 - **`assemblyFormat`** (declarative this time): variables (`$callee`, `$inputs`) print/parse the corresponding argument; back-ticked literals (`` `(` ``) are punctuation; `attr-dict` is the mandatory directive for remaining attributes; `functional-type($inputs, results)` prints `(operand types) -> result types`. Result: `toy.generic_call @multiply_transpose(%1, %3) : (tensor<2x3xf64>, tensor<2x3xf64>) -> tensor<*xf64>`.
-- The builder (in `Dialect.cpp`) sets the result to unranked and stores the callee as an attribute:
+- The builder sets the result to unranked and stores the callee as an attribute:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 void GenericCallOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
@@ -537,6 +548,8 @@ void GenericCallOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
 ### 4.6 `PrintOp` — the minimal declarative op
 
 The official docs use `PrintOp` to contrast a hand-written parser/printer (about 20 lines of C++ manipulating `OpAsmParser`/`OpAsmPrinter`) with the declarative one-liner. This repo uses the declarative form:
+
+***include/toy/Ops.td***
 
 ```tablegen
 def PrintOp : Toy_Op<"print"> {
@@ -574,6 +587,8 @@ One TableGen line replaces all of that. Prefer the declarative format whenever t
 
 ### 4.7 `ReshapeOp` — result type constraints
 
+***include/toy/Ops.td***
+
 ```tablegen
 def ReshapeOp : Toy_Op<"reshape"> {
   let summary = "tensor reshape operation";
@@ -592,6 +607,8 @@ def ReshapeOp : Toy_Op<"reshape"> {
 - The `assemblyFormat` produces `%1 = toy.reshape(%0 : tensor<2x3xf64>) to tensor<2x3xf64>` — note the free-form keyword literal `` `to` ``.
 
 ### 4.8 `ReturnOp` — traits (`Terminator`, `HasParent`), optional operands
+
+***include/toy/Ops.td***
 
 ```tablegen
 def ReturnOp : Toy_Op<"return", [Pure, HasParent<"FuncOp">, Terminator]> {
@@ -622,6 +639,8 @@ def ReturnOp : Toy_Op<"return", [Pure, HasParent<"FuncOp">, Terminator]> {
 - **Optional operand via `Variadic`**: ODS has no dedicated "0 or 1"-with-this-syntax mechanism here, so a variadic list is used and the verifier caps it at one.
 - **Assembly format optional group**: `($input^ ...)?` prints/parses the parenthesized group only when `$input` (the anchor `^`) is non-empty. So both `toy.return` and `toy.return %2 : tensor<*xf64>` are valid.
 - The **verifier** cross-checks the return against the *enclosing function's* signature — a nice example of contextual verification:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 llvm::LogicalResult ReturnOp::verify() {
@@ -654,6 +673,8 @@ llvm::LogicalResult ReturnOp::verify() {
 
 ### 4.9 `TransposeOp` — the running example
 
+***include/toy/Ops.td***
+
 ```tablegen
 def TransposeOp : Toy_Op<"transpose"> {
   let summary = "transpose operation";
@@ -671,6 +692,8 @@ def TransposeOp : Toy_Op<"transpose"> {
 ```
 
 The verifier only fires when both shapes are known (ranked), in which case the result shape must be the reverse of the input shape:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 llvm::LogicalResult TransposeOp::verify() {
@@ -690,6 +713,8 @@ llvm::LogicalResult TransposeOp::verify() {
 ### 4.10 Demystifying TableGen: the actually-generated code
 
 You never *have* to read the generated code, but seeing it once cures TableGen of its magic. This is the real generated `TransposeOp` class from `Ch2/build/op-decls.inc` in this repo (abridged):
+
+***build/op-decls.inc***
 
 ```cpp
 class TransposeOp : public ::mlir::Op<TransposeOp,
@@ -727,7 +752,9 @@ public:
 };
 ```
 
-Note how the trait list we saw in the hand-written C++ version (section 4.1) got derived automatically from `arguments`/`results` (`OneOperand`, `OneResult`, `OneTypedResult<TensorType>`). And in `Ch2/build/op-defs.inc`, verification is wired so **structural checks run before your semantic verifier**:
+Note how the trait list we saw in the hand-written C++ version (section 4.1) got derived automatically from `arguments`/`results` (`OneOperand`, `OneResult`, `OneTypedResult<TensorType>`). And in the generated definitions, verification is wired so **structural checks run before your semantic verifier**:
+
+***build/op-defs.inc***
 
 ```cpp
 ::llvm::LogicalResult TransposeOp::verifyInvariants() {
@@ -744,7 +771,9 @@ Even the `assemblyFormat` string was compiled into a ~40-line `TransposeOp::pars
 
 ## 5. The MLIRGen Module
 
-With the dialect in place, [`mlir/MLIRGen.cpp`](Ch2/mlir/MLIRGen.cpp) walks the Chapter 1 AST and emits ops. The public API ([`include/toy/MLIRGen.h`](Ch2/include/toy/MLIRGen.h)) is one function:
+With the dialect in place, [`mlir/MLIRGen.cpp`](mlir/MLIRGen.cpp) walks the Chapter 1 AST and emits ops. The public API is one function:
+
+***include/toy/MLIRGen.h***
 
 ```cpp
 mlir::OwningOpRef<mlir::ModuleOp> mlirGen(mlir::MLIRContext &context,
@@ -752,6 +781,8 @@ mlir::OwningOpRef<mlir::ModuleOp> mlirGen(mlir::MLIRContext &context,
 ```
 
 `OwningOpRef` is an RAII handle that erases the module when it goes out of scope. Internally everything lives in a private `MLIRGenImpl` class with three key members:
+
+***mlir/MLIRGen.cpp***
 
 ```cpp
 class MLIRGenImpl {
@@ -774,6 +805,8 @@ class MLIRGenImpl {
 
 Every `builder.create<...>` call needs a location. A tiny helper converts Toy AST locations (file/line/col captured by the lexer) into MLIR locations:
 
+***mlir/MLIRGen.cpp***
+
 ```cpp
 mlir::Location loc(const Location &loc) {
   return mlir::FileLineColLoc::get(builder.getStringAttr(*loc.file),
@@ -786,6 +819,8 @@ This is why the output in section 7 carries precise `loc("Ch2/codegen.toy":3:10)
 ### 5.2 The module and function overloads
 
 The top-level `mlirGen(ModuleAST&)` creates an empty `builtin.module`, codegens each function into it, and **verifies** the result — this is where all the ODS constraints and our hand-written `verify()` methods actually run:
+
+***mlir/MLIRGen.cpp***
 
 ```cpp
 mlir::ModuleOp mlirGen(ModuleAST &moduleAST) {
@@ -866,6 +901,8 @@ Two things worth internalizing: the **insertion point** is how the builder knows
 ### 5.3 Expression overloads
 
 Codegen dispatches on the AST node kind (LLVM-style RTTI):
+
+***mlir/MLIRGen.cpp***
 
 ```cpp
 mlir::Value mlirGen(ExprAST &expr) {
@@ -958,7 +995,9 @@ mlir::Type getType(ArrayRef<int64_t> shape) {
 
 ### 5.4 The driver
 
-[`toyc.cpp`](Ch2/toyc.cpp) gains a `-emit=mlir` action next to Chapter 1's `-emit=ast`, plus an input-kind switch. `dumpMLIR()` handles **two input paths**, which is what enables the round-trip test:
+The driver gains a `-emit=mlir` action next to Chapter 1's `-emit=ast`, plus an input-kind switch. `dumpMLIR()` handles **two input paths**, which is what enables the round-trip test:
+
+***toyc.cpp***
 
 ```cpp
 int dumpMLIR() {
@@ -1000,74 +1039,15 @@ cl::ParseCommandLineOptions(argc, argv, "toy compiler\n");
 
 ## 6. Building
 
-### 6.1 CMake walkthrough (this repo's out-of-tree superbuild)
+The shared machinery (superbuild, presets, dual-mode guard, `build.sh`) is documented in the top-level [README, "The build system"](../README.md#the-build-system). Build this chapter with `cd toy && ./build.sh ch2` → `./build/bin/toyc-ch2`.
 
-Upstream builds Toy *inside* the llvm-project tree with helper macros like `add_toy_chapter`. This repo instead builds all chapters as one **standalone superbuild** against Homebrew LLVM/MLIR 20 (macOS, Ninja). The top-level [`CMakeLists.txt`](CMakeLists.txt) at `toy/` does the expensive common setup exactly once, then pulls in every chapter:
+**What Chapter 2 adds to the build: TableGen.** This is the chapter where the build stops being a plain C++ compile — `mlir-tblgen` now generates C++ from `Ops.td` before anything else can compile.
 
-```cmake
-cmake_minimum_required(VERSION 3.20)
-if(APPLE)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "macOS Deployment Target" FORCE)
-endif()
-project(toy-tutorial)
+### 6.1 The chapter targets and the TableGen wiring
 
-# 1. Find the installed MLIR/LLVM packages (uses MLIR_DIR / LLVM_DIR).
-find_package(MLIR REQUIRED CONFIG)
-find_package(LLVM REQUIRED CONFIG)
+Below the standalone guard:
 
-# 2. Make their CMake modules discoverable...
-list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-
-# 3. ...and include the macros that define mlir_tablegen() etc.
-include(TableGen)
-include(AddLLVM)
-include(AddMLIR)
-include(HandleLLVMOptions)
-
-include_directories(${MLIR_INCLUDE_DIRS} ${LLVM_INCLUDE_DIRS})
-
-# Collect every chapter binary in build/bin/ instead of build/ChN/.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-add_subdirectory(Ch1)
-add_subdirectory(Ch2)
-# ... Ch3 through Ch7
-```
-
-Where do `MLIR_DIR`, `LLVM_DIR`, and the compiler come from? [`CMakePresets.json`](CMakePresets.json) pins them, so `cmake --preset default` needs no `-D` flags:
-
-```json
-{
-  "name": "default",
-  "displayName": "Homebrew LLVM/MLIR 20 (Ninja, Release)",
-  "generator": "Ninja",
-  "binaryDir": "${sourceDir}/build",
-  "cacheVariables": {
-    "CMAKE_BUILD_TYPE": "Release",
-    "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm@20/bin/clang",
-    "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm@20/bin/clang++",
-    "MLIR_DIR": "/opt/homebrew/opt/llvm@20/lib/cmake/mlir",
-    "LLVM_DIR": "/opt/homebrew/opt/llvm@20/lib/cmake/llvm"
-  }
-}
-```
-
-The chapter's own [`Ch2/CMakeLists.txt`](Ch2/CMakeLists.txt) is **dual-mode**: the same `find_package`/`include` boilerplate as the top level is wrapped in a guard that fires only when the chapter is configured *directly* (standalone mode); in the superbuild the top level has already done it:
-
-```cmake
-# Runs only when this chapter is configured directly (cmake -S Ch2).
-# In the superbuild (cmake -S toy/), ../CMakeLists.txt already did all this.
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(toy-ch2)
-  find_package(MLIR REQUIRED CONFIG)
-  find_package(LLVM REQUIRED CONFIG)
-  # ... CMAKE_MODULE_PATH, include(TableGen/AddLLVM/AddMLIR/HandleLLVMOptions),
-  #     include_directories — same boilerplate as the top level
-endif()
-```
-
-The chapter targets below the guard are unchanged by the restructure:
+***CMakeLists.txt***
 
 ```cmake
 add_subdirectory(include)          # runs TableGen (see below)
@@ -1099,7 +1079,9 @@ Notable differences from upstream:
 - **Explicit `add_dependencies(toyc-ch2 ToyCh2OpsIncGen)`**: in-tree helper macros normally add this dependency for you. Out-of-tree, without it, Ninja may try to compile `Dialect.cpp` before TableGen has produced `toy/Ops.h.inc` — a classic build race. This line was added to fix exactly that.
 - Two include roots: the *source* `include/` (for `Ops.td`, `Dialect.h`) and the chapter's *binary* include dir (`${CMAKE_CURRENT_BINARY_DIR}/include/`), where the generated `.inc` files land mirroring the source layout. In the superbuild that is `build/Ch2/include/toy/*.inc`; in a standalone chapter build it is `Ch2/build/include/toy/*.inc`.
 
-The TableGen wiring itself lives in [`include/toy/CMakeLists.txt`](Ch2/include/toy/CMakeLists.txt) (reached via `include/CMakeLists.txt`, which is just `add_subdirectory(toy)`):
+The TableGen wiring itself lives one level down (reached via `include/CMakeLists.txt`, which is just `add_subdirectory(toy)`):
+
+***include/toy/CMakeLists.txt***
 
 ```cmake
 set(LLVM_TARGET_DEFINITIONS Ops.td)
@@ -1119,39 +1101,15 @@ Line by line: `LLVM_TARGET_DEFINITIONS` names the `.td` input; each `mlir_tableg
 | `Ops.h.inc` | `-gen-op-decls` | `include/toy/Dialect.h` (under `GET_OP_CLASSES`) |
 | `Ops.cpp.inc` | `-gen-op-defs` | `mlir/Dialect.cpp` (under `GET_OP_LIST` and `GET_OP_CLASSES`) |
 
-### 6.2 build.sh
+### 6.2 Every later chapter repeats this pattern
 
-The top-level [`build.sh`](build.sh) drives one shared, **incremental** build tree for all chapters:
+Chapters 3–7 all keep this exact structure — `include/toy/CMakeLists.txt` generating the op/dialect `.inc` files into a `ToyChNOpsIncGen` target, plus the explicit `add_dependencies` race guard — and each adds its own extra `.td` → generator pairs on top (DRR rewriters in Ch3, interfaces in Ch4). Their READMEs describe only those additions.
 
-```bash
-cd /Users/roy/study/mlir/toy
-./build.sh ch2          # build only toyc-ch2
-```
+### 6.3 Inspecting TableGen output by hand
 
-Under the hood it configures once with the preset if (and only if) `build/CMakeCache.txt` doesn't exist yet, then builds the requested target:
+You don't need CMake to see what ODS generates — [`run_mlir-tblgen.sh`](run_mlir-tblgen.sh) (run from inside `Ch2/`; unchanged by the superbuild restructure) invokes `mlir-tblgen` directly, once per generator, with the Homebrew MLIR headers on the include path (needed to resolve `include "mlir/IR/OpBase.td"` etc.):
 
-```bash
-cmake --preset default                                # first time only
-cmake --build --preset default --target toyc-ch2      # or no --target for all
-```
-
-Other invocations: `./build.sh` (everything), `./build.sh --fresh` (wipe `build/` and rebuild), `./build.sh ch2 --fresh`. There is no `rm -rf build` on the normal path — Ninja re-runs CMake automatically whenever a `CMakeLists.txt` changes, so rebuilds are incremental. The result is `build/bin/toyc-ch2` (all chapter binaries are collected in `build/bin/` via `CMAKE_RUNTIME_OUTPUT_DIRECTORY`).
-
-Thanks to the dual-mode guard, **standalone mode still works** — configure the chapter directly, passing what the preset would have provided:
-
-```bash
-cd /Users/roy/study/mlir/toy
-cmake -S Ch2 -B Ch2/build -G Ninja \
-  -DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir \
-  -DLLVM_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/llvm
-cmake --build Ch2/build
-```
-
-That produces `Ch2/build/toyc-ch2`, which `run.sh` will find as a fallback when `build/bin/toyc-ch2` doesn't exist.
-
-### 6.3 Inspecting TableGen output by hand: run_mlir-tblgen.sh
-
-You don't need CMake to see what ODS generates — [`run_mlir-tblgen.sh`](Ch2/run_mlir-tblgen.sh) (run from inside `Ch2/`; unchanged by the superbuild restructure) invokes `mlir-tblgen` directly, once per generator, with the Homebrew MLIR headers on the include path (needed to resolve `include "mlir/IR/OpBase.td"` etc.):
+***run_mlir-tblgen.sh***
 
 ```bash
 mlir-tblgen -gen-dialect-decls ./include/toy/Ops.td -I /opt/homebrew/opt/llvm@20/include/ -o ./build/dialect-decls.inc
@@ -1166,14 +1124,14 @@ The outputs land in `Ch2/build/` (a scratch location, separate from the superbui
 
 ## 7. Running and Testing
 
-### 7.1 run.sh
+### 7.1 The run script
 
 ```bash
-cd /Users/roy/study/mlir/toy
+cd toy
 ./run.sh ch2
 ```
 
-The top-level [`run.sh`](run.sh) looks up the binary in `build/bin/` (superbuild) first, falling back to `Ch2/build/` (standalone chapter build), and its `run_ch2` function executes three commands:
+The top-level [`run.sh`](../run.sh) looks up the binary in `build/bin/` (superbuild) first, falling back to `Ch2/build/` (standalone chapter build), and its `run_ch2` function executes three commands:
 
 ```bash
 # 1. Compile Ch2/codegen.toy to MLIR, printing source locations.
@@ -1196,7 +1154,7 @@ Flags:
 
 ### 7.2 The input
 
-[`codegen.toy`](Ch2/codegen.toy):
+***codegen.toy***
 
 ```
 # User defined generic function that operates on unknown shaped arguments.
@@ -1215,7 +1173,14 @@ def main() {
 
 ### 7.3 Actual captured output (step 1), annotated
 
-This is the real output of `./build/bin/toyc-ch2 Ch2/codegen.toy -emit=mlir -mlir-print-debuginfo` on this machine (run from `/Users/roy/study/mlir/toy` — hence the `Ch2/` prefix in every `loc(...)`, which reproduces the input path exactly as given):
+Reproduce it directly (from `toy/` — hence the `Ch2/` prefix in every `loc(...)`, which reproduces the input path exactly as given; the dump goes to stderr):
+
+```bash
+cd toy
+./build/bin/toyc-ch2 Ch2/codegen.toy -emit=mlir -mlir-print-debuginfo 2>&1
+```
+
+Real output on this machine:
 
 ```mlir
 module {
@@ -1262,7 +1227,14 @@ Also note the function-argument locations (`%arg0: tensor<*xf64> loc("Ch2/codege
 
 ### 7.4 The round trip (steps 2–3) and why it matters
 
-Step 3 re-parses the temporary `.mlir` file and prints (actual output, no `-mlir-print-debuginfo` this time so no `loc(...)`):
+You can reproduce the round trip without the temp file at all — pipe the emission straight back in, using `-` (stdin) and `-x mlir` to force the MLIR parser path regardless of extension:
+
+```bash
+cd toy
+./build/bin/toyc-ch2 Ch2/codegen.toy -emit=mlir 2>&1 | ./build/bin/toyc-ch2 - -x mlir -emit=mlir 2>&1
+```
+
+Step 3 re-parses the emitted MLIR and prints (actual output, no `-mlir-print-debuginfo` this time so no `loc(...)`):
 
 ```mlir
 module {
@@ -1295,10 +1267,10 @@ A parser/printer mismatch (say, printing `to` but parsing `into`) is one of the 
 
 ### 7.5 More inputs to try
 
-`/Users/roy/study/mlir/test_Example/Toy/Ch2/` has additional cases:
+`test_Example/Toy/Ch2/` has additional cases:
 
 ```bash
-cd /Users/roy/study/mlir/toy
+cd toy
 ./build/bin/toyc-ch2 ../test_Example/Toy/Ch2/scalar.toy -emit=mlir   # scalar constant + reshape
 ./build/bin/toyc-ch2 ../test_Example/Toy/Ch2/empty.toy  -emit=mlir   # empty main -> implicit toy.return
 ./build/bin/toyc-ch2 ../test_Example/Toy/Ch2/ast.toy    -emit=ast    # Chapter 1 action still works
@@ -1306,6 +1278,27 @@ cd /Users/roy/study/mlir/toy
 ```
 
 `invalid.mlir` is the negative test: it contains malformed Toy IR, and the point is to watch the *registered* dialect reject it with a precise diagnostic instead of accepting it opaquely (contrast with section 2.4).
+
+### 7.6 The ecosystem view: feeding Toy IR to stock `mlir-opt`
+
+`toyc-ch2` is just `mlir-opt` with the Toy dialect linked in. Two experiments against the *stock* Homebrew `mlir-opt` make that concrete. First, the custom assembly syntax is unparseable without the dialect's registered `parse()` methods — even with the escape hatch flag:
+
+```bash
+cd toy
+./build/bin/toyc-ch2 Ch2/codegen.toy -emit=mlir 2>&1 \
+  | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
+# → error: Dialect `toy' not found for custom op 'toy.func'
+```
+
+But print the same module in **generic form** and stock `mlir-opt` round-trips it fine, treating every `toy.*` op as an opaque registered-by-nobody operation (this is section 2.4's registered-vs-opaque distinction, live):
+
+```bash
+./build/bin/toyc-ch2 Ch2/codegen.toy -emit=mlir -mlir-print-op-generic 2>&1 \
+  | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
+# → "toy.func"() <{function_type = ..., sym_name = "multiply_transpose"}> ({ ... — parses and reprints
+```
+
+The lesson: MLIR's *generic* syntax (`"toy.transpose"(%arg0) : (tensor<*xf64>) -> tensor<*xf64>`) needs no dialect at all — it's pure structure — while the *custom* syntax, verification, and semantics all come from registration. That's why every project with a dialect ships its own `foo-opt` binary, and why `toyc-chN` exists rather than everything funneling through one universal tool.
 
 ---
 
@@ -1337,6 +1330,6 @@ cd /Users/roy/study/mlir/toy
 
 - Official doc: [Toy Tutorial Chapter 2 — Emitting Basic MLIR](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-2/)
 - Related MLIR docs: [MLIR Language Reference](https://mlir.llvm.org/docs/LangRef/) · [Operation Definition Specification (ODS)](https://mlir.llvm.org/docs/DefiningDialects/Operations/) · [Declarative Assembly Format](https://mlir.llvm.org/docs/DefiningDialects/Operations/#declarative-assembly-format)
-- Previous: [Chapter 1 — Toy Language and AST](1_toy_lang_ast.md)
-- Next: [Chapter 3 — High-level Language-Specific Analysis and Transformation](3_high_level_transformations.md)
-- Back to [README](README.md)
+- Previous: [Chapter 1 — Toy Language and AST](../Ch1/README.md)
+- Next: [Chapter 3 — High-level Language-Specific Analysis and Transformation](../Ch3/README.md)
+- Back to [README](../README.md)

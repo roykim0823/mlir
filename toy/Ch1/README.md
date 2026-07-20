@@ -15,39 +15,29 @@ Chapter 1 builds exactly that frontend and nothing more. The deliverable is a sm
 
 Nothing in this chapter touches MLIR APIs yet — the AST is plain C++ classes. The only MLIR involvement is in the *build system*: we compile against the MLIR/LLVM headers and link `MLIRSupport`, which establishes the out-of-tree CMake plumbing that every later chapter builds on. Chapter 2 will take this same AST and emit real MLIR from it.
 
-### This repo's layout (differs from upstream llvm-project)
+### Where Chapter 1 lives in this repo
 
-Unlike the upstream tutorial code, which lives inside `llvm-project/mlir/examples/toy/` and is built as part of the monorepo, this study repo builds all chapters as one **out-of-tree CMake superbuild** rooted at `toy/`, against a prebuilt Homebrew LLVM/MLIR 20 installation. The top-level `toy/CMakeLists.txt` does the `find_package(MLIR/LLVM)` setup once and pulls in every chapter with `add_subdirectory(Ch1)`..`add_subdirectory(Ch7)`; each `ChN/` additionally remains configurable as a standalone project (see section 4.5).
+How this repo is organized — the out-of-tree CMake superbuild at `toy/` (unlike the upstream code, which lives inside `llvm-project/mlir/examples/toy/`), the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers — is documented once in the top-level [README](../README.md#repository-layout) ("How this repo differs from upstream llvm-project" and "Repository layout"). This chapter also remains configurable as a standalone project (see section 4.2). Chapter 1 specifics:
 
 | Item | Location / value |
 |---|---|
-| Repo root | `/Users/roy/study/mlir` |
-| Superbuild root | `/Users/roy/study/mlir/toy/` |
 | Chapter 1 code | `/Users/roy/study/mlir/toy/Ch1/` |
-| MLIR CMake package | `MLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir` (pinned in `CMakePresets.json`) |
-| Compiler | `/opt/homebrew/opt/llvm@20/bin/clang++` (Homebrew clang 20.1.8, pinned in `CMakePresets.json`) |
-| Platform / generator | macOS (Darwin), Ninja |
 | Build | `cd toy && ./build.sh ch1` → binary at `./build/bin/toyc-ch1` |
 | Run | `cd toy && ./run.sh ch1` → `./build/bin/toyc-ch1 ../test_Example/Toy/Ch1/ast.toy -emit=ast` |
 | Test inputs | `/Users/roy/study/mlir/test_Example/Toy/Ch1/` (`ast.toy`, `empty.toy`) |
 
-Relevant files in `toy/`:
+Chapter 1's own files:
 
 ```text
-toy/
-├── CMakeLists.txt          # superbuild: find_package(MLIR/LLVM) once, add_subdirectory(Ch1..Ch7)
-├── CMakePresets.json       # pins Ninja, Release, Homebrew llvm@20 clang, MLIR_DIR/LLVM_DIR
-├── build.sh                # ./build.sh [ch1..ch7|all] [--fresh] — configure once, build incrementally
-├── run.sh                  # ./run.sh <ch1..ch7|all> — each chapter's demo commands
-└── Ch1/
-    ├── CMakeLists.txt      # dual-mode: chapter targets + standalone-only boilerplate guard
-    ├── toyc.cpp            # driver: CLI options + main()
-    ├── parser/
-    │   └── AST.cpp         # AST pretty-printer (dumper)
-    └── include/toy/
-        ├── Lexer.h         # tokens + lexer (header-only)
-        ├── Parser.h        # recursive-descent parser (header-only)
-        └── AST.h           # AST node class hierarchy (header-only)
+Ch1/
+├── CMakeLists.txt      # dual-mode: chapter targets + standalone-only boilerplate guard
+├── toyc.cpp            # driver: CLI options + main()
+├── parser/
+│   └── AST.cpp         # AST pretty-printer (dumper)
+└── include/toy/
+    ├── Lexer.h         # tokens + lexer (header-only)
+    ├── Parser.h        # recursive-descent parser (header-only)
+    └── AST.h           # AST node class hierarchy (header-only)
 ```
 
 Note that the lexer, parser, and AST are all header-only; the only two translation units are `toyc.cpp` and `parser/AST.cpp`.
@@ -166,7 +156,9 @@ literal_list  ::= tensorliteral (',' tensorliteral)*
 
 The frontend is intentionally "similar to the LLVM Kaleidoscope tutorial" (as the official doc says) and is not the interesting part of the MLIR tutorial — but it is worth understanding thoroughly once, because every later chapter consumes the AST it produces.
 
-### 3.1 `include/toy/Lexer.h` — tokens and the lexer
+### 3.1 Tokens and the Lexer
+
+***include/toy/Lexer.h***
 
 The lexer is a single header. It starts with a `Location` struct that every token (and later, every AST node) carries — this becomes crucial in Chapter 2, where locations are attached to MLIR operations:
 
@@ -255,7 +247,9 @@ Two implementation details worth internalizing:
 - The lexer always keeps **one character of lookahead** in `lastChar` (initialized to `' '`), because deciding where an identifier or number *ends* requires reading one char too far, and there is no "putback" into the stream.
 - `getNextChar()` maintains the current line buffer, pulling a new line via `readNextLine()` when it drains, and updates `curLineNum`/`curCol` when it sees `'\n'`. That is the entire location-tracking machinery.
 
-### 3.2 `include/toy/AST.h` — the AST class hierarchy
+### 3.2 The AST Class Hierarchy
+
+***include/toy/AST.h***
 
 The AST is "optimized for simplicity, not efficiency": a tree of nodes owned via `std::unique_ptr<>`. First, a helper for declared types:
 
@@ -346,7 +340,9 @@ Finally, the header declares the one entry point implemented in `parser/AST.cpp`
 void dump(ModuleAST &);
 ```
 
-### 3.3 `include/toy/Parser.h` — recursive descent parsing
+### 3.3 Recursive Descent Parsing
+
+***include/toy/Parser.h***
 
 The `Parser` holds a reference to the lexer and exposes a single public method. Its class comment is worth quoting because it states the chapter's scope precisely:
 
@@ -511,7 +507,9 @@ std::unique_ptr<R> parseError(T &&expected, U &&context = "") {
 }
 ```
 
-### 3.4 `parser/AST.cpp` — the AST dumper
+### 3.4 The AST Dumper
+
+***parser/AST.cpp***
 
 This file implements the `toy::dump(ModuleAST&)` declared in `AST.h`. It is a straightforward tree walk with pretty indentation, and it introduces two idioms you will keep seeing in MLIR code.
 
@@ -552,6 +550,15 @@ void ASTDumper::dump(ExprAST *expr) {
 
 `TypeSwitch` tries `dyn_cast` against each listed class (using the `classof` hooks from `AST.h`) and calls the lambda with the concrete pointer type — the generic lambda (`auto *node`) then picks the right `dump` overload at compile time.
 
+**Aside: this is the visitor pattern, minus the boilerplate.** The problem being solved here is the classic *double dispatch* problem: behavior depends on both the operation (dump, and in Ch2 codegen) and the concrete node type, but C++ virtual calls dispatch on only one. Textbook compilers solve it with the GoF **visitor pattern** — every node gets an `accept(Visitor&)` method, every pass becomes a visitor class with one `visit(ConcreteNode&)` overload per type (this is how javac, Roslyn, and Babel expose their ASTs). LLVM-style code gets the same organization without `accept()`/`visit()`:
+
+- Every node already carries a kind tag (`ExprAST::getKind()`) because LLVM builds with `-fno-rtti` — no `dynamic_cast` — and implements its own casting (`isa`/`dyn_cast` via `classof`). Given a cheap integer that identifies the concrete type, the visitor's second virtual call is redundant: dispatch is a switch on the kind.
+- `TypeSwitch` above is exactly a *lambda visitor*: one handler per concrete type, assembled inline — right-sized for a single-use pass like this dumper.
+- Ch2's `MLIRGen` is a *codegen visitor* in shape (one class holding the `OpBuilder` and symbol table, one `mlirGen(XxxAST&)` overload per node) that dispatches via `switch (expr.getKind())` — a hand-rolled `std::variant` + `std::visit`.
+- When LLVM does want reusable visitor scaffolding it uses CRTP forms (`llvm::InstVisitor`, Clang's `RecursiveASTVisitor`, MLIR's `AffineExprVisitor`) — same one-handler-per-type organization, dispatch resolved at compile time.
+
+The classic visitor's real payoff — adding new passes without touching the AST — buys nothing here: Toy's AST is tiny, frozen (it grows once, in Ch7), and has exactly two consumers (this dumper and Ch2's `MLIRGen`) before the program becomes MLIR for good. From Ch3 on, traversal-plus-dispatch is MLIR's job (`walk()`, `RewritePattern`s, and — in Ch4 — op interfaces), which handles an *open* set of ops that no fixed visitor interface could enumerate.
+
 Each per-node printer is small. Two representative ones:
 
 ```cpp
@@ -579,7 +586,9 @@ Tensor literals get special treatment: a free function `printLitHelper` recurses
 
 One practical detail: the dumper writes to **`llvm::errs()` — stderr, not stdout**. If you want to pipe or save the AST dump, redirect with `2>&1`.
 
-### 3.5 `toyc.cpp` — the driver
+### 3.5 The Driver
+
+***toyc.cpp***
 
 The driver is only ~70 lines. Command-line handling uses LLVM's `cl` library, which turns declarative global option objects into a full argv parser:
 
@@ -642,144 +651,20 @@ If you run without `-emit=ast`, the file is still parsed (so you get parse error
 
 ## 4. Building
 
-All chapters share one **superbuild**: configure once at `toy/`, then build any chapter incrementally into the shared `toy/build/` tree. The everyday workflow is:
+The shared machinery — the superbuild `toy/CMakeLists.txt`, `CMakePresets.json`, the dual-mode standalone guard, and `build.sh` — is documented once in the top-level [README, "The build system"](../README.md#the-build-system). Build this chapter with:
 
 ```bash
 cd /Users/roy/study/mlir/toy
-./build.sh ch1          # build only toyc-ch1  →  ./build/bin/toyc-ch1
-./build.sh              # build everything (toyc-ch1 .. toyc-ch7)
-./build.sh ch1 --fresh  # wipe build/ first, then rebuild
+./build.sh ch1          # → ./build/bin/toyc-ch1
 ```
 
-Or, equivalently, drive CMake directly via the presets:
+### 4.1 What Chapter 1 adds to the build
 
-```bash
-cmake --preset default                          # configure (once)
-cmake --build --preset default --target toyc-ch1
-```
+Below the standalone guard, `Ch1/CMakeLists.txt` has the smallest targets section of all seven chapters:
 
-### 4.1 The superbuild: `toy/CMakeLists.txt`, line by line
-
-The top-level CMakeLists does the **out-of-tree boilerplate once** for every chapter (upstream instead uses in-tree helpers like `add_toy_chapter` inside the monorepo build). Here is the full file with commentary:
+***CMakeLists.txt***
 
 ```cmake
-cmake_minimum_required(VERSION 3.20)
-
-if(APPLE)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "macOS Deployment Target" FORCE)
-endif()
-
-project(toy-tutorial)
-```
-
-- `cmake_minimum_required(3.20)` matches LLVM 20's own minimum.
-- On macOS the deployment target is pinned (here to the host OS major version) to avoid the linker warning/mismatch that occurs when Homebrew's LLVM was built against a different `MACOSX_DEPLOYMENT_TARGET` than CMake's default.
-- `project()` declares an ordinary C++ project — we are *not* inside the LLVM build.
-
-```cmake
-find_package(MLIR REQUIRED CONFIG)
-find_package(LLVM REQUIRED CONFIG)
-message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
-message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-```
-
-- `CONFIG` mode makes CMake locate the *installed package config files* (`MLIRConfig.cmake`, `LLVMConfig.cmake`) rather than a `FindMLIR.cmake` module. Resolution is driven by `MLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir` (set as a cache variable by `CMakePresets.json`; `MLIRConfig.cmake` finds its sibling LLVM automatically, and the explicit `find_package(LLVM)` makes `LLVM_CMAKE_DIR` etc. available too). These configs import every prebuilt MLIR/LLVM library as a CMake target — which is why the chapters can later write `target_link_libraries(... MLIRSupport)` without any manual `-L`/`-l` flags.
-
-```cmake
-list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-
-include(TableGen)
-include(AddLLVM)
-include(AddMLIR)
-include(HandleLLVMOptions)
-```
-
-- The two `list(APPEND CMAKE_MODULE_PATH ...)` lines let plain `include(<name>)` find LLVM/MLIR's helper scripts inside the Homebrew install.
-- `TableGen`, `AddLLVM`, and `AddMLIR` define macros such as `add_llvm_executable`, `mlir_tablegen`, and `add_mlir_dialect`; `HandleLLVMOptions` sets the compiler flags LLVM expects (e.g. `-fno-rtti`, matching the LLVM-style RTTI discussed in section 3.2). Chapter 1 doesn't strictly need the TableGen machinery (it uses plain `add_executable`), but Chapter 2+ runs TableGen for dialect definitions, and doing all of this once at the top level is exactly what makes the superbuild work.
-
-```cmake
-include_directories(${MLIR_INCLUDE_DIRS}
-                    ${LLVM_INCLUDE_DIRS})
-```
-
-- Adds the installed MLIR and LLVM header directories globally, so `#include "llvm/ADT/StringRef.h"` etc. resolve. Ordering matters conceptually: packages first, module path second, includes third — each step depends on variables produced by the previous one.
-
-```cmake
-# Collect every chapter binary in build/bin/ instead of build/ChN/.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-add_subdirectory(Ch1)
-add_subdirectory(Ch2)
-...
-add_subdirectory(Ch7)
-```
-
-- `CMAKE_RUNTIME_OUTPUT_DIRECTORY` redirects every executable into a single `build/bin/` directory — so the Chapter 1 binary lands at `toy/build/bin/toyc-ch1` rather than `toy/build/Ch1/toyc-ch1`.
-- Each `add_subdirectory(ChN)` pulls in that chapter's targets; the boilerplate above is already in effect for all of them.
-
-### 4.2 `CMakePresets.json`
-
-The toolchain choices live in a preset instead of shell flags, so a bare `cmake --preset default` reproduces the exact same configuration every time:
-
-```json
-{
-  "name": "default",
-  "displayName": "Homebrew LLVM/MLIR 20 (Ninja, Release)",
-  "generator": "Ninja",
-  "binaryDir": "${sourceDir}/build",
-  "cacheVariables": {
-    "CMAKE_BUILD_TYPE": "Release",
-    "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm@20/bin/clang",
-    "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm@20/bin/clang++",
-    "MLIR_DIR": "/opt/homebrew/opt/llvm@20/lib/cmake/mlir",
-    "LLVM_DIR": "/opt/homebrew/opt/llvm@20/lib/cmake/llvm"
-  }
-}
-```
-
-This pins the **Ninja** generator, a **Release** build, the Homebrew llvm@20 `clang`/`clang++` (keeping the compiler consistent with the prebuilt libraries), and the `MLIR_DIR`/`LLVM_DIR` package locations that `find_package` needs. A matching build preset (also named `default`) lets `cmake --build --preset default [--target toyc-chN]` work without naming the build directory.
-
-### 4.3 `Ch1/CMakeLists.txt` — dual-mode chapter file
-
-The chapter's own CMakeLists is now **dual-mode**: the out-of-tree boilerplate from section 4.1 is repeated here, but wrapped in a guard so it runs *only* when the chapter is configured standalone. In the superbuild, `CMAKE_SOURCE_DIR` is `toy/` while `CMAKE_CURRENT_SOURCE_DIR` is `toy/Ch1/`, so the guard is false and the top level's setup is used instead:
-
-```cmake
-cmake_minimum_required(VERSION 3.20)
-
-# ---------------------------------------------------------------------------
-# Standalone-mode boilerplate.
-# Runs only when this chapter is configured directly (cmake -S Ch1).
-# In the superbuild (cmake -S toy/), ../CMakeLists.txt already did all this.
-# ---------------------------------------------------------------------------
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "macOS Deployment Target" FORCE)
-  endif()
-  project(toy-ch1)
-
-  find_package(MLIR REQUIRED CONFIG)
-  find_package(LLVM REQUIRED CONFIG)
-
-  list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-  list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-
-  include(TableGen)
-  include(AddLLVM)
-  include(AddMLIR)
-  include(HandleLLVMOptions)
-
-  include_directories(${MLIR_INCLUDE_DIRS}
-                      ${LLVM_INCLUDE_DIRS})
-endif()
-```
-
-The targets section below the guard runs in *both* modes and is unchanged from before the restructure:
-
-```cmake
-# ---------------------------------------------------------------------------
-# Chapter targets
-# ---------------------------------------------------------------------------
 add_executable(toyc-ch1
   toyc.cpp
   parser/AST.cpp
@@ -795,44 +680,23 @@ target_link_libraries(toyc-ch1
 - Exactly two translation units, as noted earlier — `Lexer.h`, `Parser.h`, and `AST.h` are header-only.
 - `include_directories(include/)` makes `#include "toy/AST.h"` resolve to `Ch1/include/toy/AST.h`.
 - **Why only `MLIRSupport`?** Chapter 1 uses no MLIR IR at all — only LLVM *support* utilities (`llvm::StringRef`, `MemoryBuffer`, `raw_ostream`, `cl::opt`, `TypeSwitch`, `Twine`, `interleaveComma`, casting). `MLIRSupport` is MLIR's small support library, and linking it transitively pulls in `LLVMSupport` (and friends) that actually provide those symbols. The upstream in-tree CMakeLists does the equivalent: it, too, links only `MLIRSupport` for Ch1. Dialect/IR libraries (`MLIRIR`, `MLIRParser`, ...) only appear starting in Chapter 2 when we build real MLIR operations.
+- **No TableGen anywhere** — there is no dialect yet. The `include(TableGen)`/`AddMLIR` machinery set up at the top level sits unused until Chapter 2.
 
-### 4.4 `build.sh` and artifacts
+### 4.2 Standalone build
 
-`toy/build.sh` is a thin wrapper over the presets, with usage `./build.sh [ch1..ch7|all] [--fresh]`:
-
-1. With `--fresh` it first runs `rm -rf build` — otherwise the build tree is **kept and reused incrementally** (no more per-chapter clean rebuilds).
-2. If `build/CMakeCache.txt` does not exist yet, it configures via `cmake --preset default`; afterwards Ninja re-runs CMake automatically whenever a `CMakeLists.txt` changes.
-3. Then it builds: `cmake --build --preset default` for `all`, or `cmake --build --preset default --target toyc-chN` for a single chapter. Verified toolchain: Homebrew clang 20.1.8, CMake 4.3.1.
-
-Expected artifacts in `toy/build/`:
-
-```text
-CMakeCache.txt  CMakeFiles/  build.ninja  cmake_install.cmake  Ch1/ ... Ch7/  bin/
-```
-
-The ones you care about live in **`build/bin/`**: `toyc-ch1` (and, after a full build, `toyc-ch2` .. `toyc-ch7`).
-
-```bash
-cd /Users/roy/study/mlir/toy && ./build.sh ch1
-```
-
-### 4.5 Standalone chapter builds still work
-
-Thanks to the dual-mode guard, a chapter can still be configured as its own project — useful for experimenting with one chapter in isolation. Since there is no preset at the chapter level, pass the toolchain settings explicitly:
+Like every chapter, Ch1 can be configured as its own project (no preset applies at the chapter level, so pass the toolchain flags — see the top README for why):
 
 ```bash
 cd /Users/roy/study/mlir/toy
 cmake -S Ch1 -B Ch1/build -G Ninja \
       -DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir \
       -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++
-cmake --build Ch1/build
+cmake --build Ch1/build      # → Ch1/build/toyc-ch1 (run.sh falls back to it)
 ```
-
-This produces `Ch1/build/toyc-ch1`; `run.sh` even checks that location as a fallback when `build/bin/toyc-ch1` doesn't exist. The superbuild is the primary workflow, though — the standalone mode is secondary.
 
 ## 5. Running and Testing
 
-### 5.1 `run.sh` and what the flags mean
+### 5.1 The run script and what the flags mean
 
 The single `toy/run.sh` holds every chapter's demo commands (`./run.sh <ch1..ch7|all>`); its Chapter 1 case is:
 
@@ -849,7 +713,15 @@ cd /Users/roy/study/mlir/toy && ./run.sh ch1
 
 ### 5.2 Actual captured output
 
-Real output from `cd /Users/roy/study/mlir/toy && ./run.sh ch1` on this machine (complete, not truncated):
+Reproduce it directly (the `2>&1` matters — the dump goes to stderr, see the pitfalls in §6):
+
+```bash
+cd /Users/roy/study/mlir/toy
+./build/bin/toyc-ch1 ../test_Example/Toy/Ch1/ast.toy -emit=ast 2>&1
+# or via the wrapper: ./run.sh ch1
+```
+
+Real output on this machine (complete, not truncated):
 
 ```text
   Module:
@@ -926,11 +798,27 @@ Parse error (4, 0): expected 'def' in prototype but has Token -1
 
 `empty.toy` contains only comments, so the first real token is `tok_eof` (`-1`). `parsePrototype` fails with the message above (via the `parseError` helper — note it prints the raw token integer, and `-1` maps to `tok_eof`). Interestingly, `parseModule` then observes that the current token *is* EOF, so it still returns a valid — empty — `ModuleAST`, which dumps as a bare `Module:` line, and the process exits with status 0. The upstream FileCheck test only asserts that a `Parse error` is printed and that no assertion fires (`CHECK-NOT: Assert`); it is a robustness test, not an exit-code test.
 
-You can also feed the compiler from stdin (the default input `-`):
+### 5.5 Poking at the driver by hand
+
+Chapter 1 has no MLIR tools yet (that starts in Chapter 2, where `toyc-ch2`'s output round-trips through `mlir-opt`-style parsing), but `toyc-ch1` already follows the LLVM driver conventions you'll meet in every `mlir-*` tool. Three quick experiments:
 
 ```bash
+cd /Users/roy/study/mlir/toy
+
+# 1. Omit -emit: the driver silently does parse-only and hints at the flag.
+./build/bin/toyc-ch1 ../test_Example/Toy/Ch1/ast.toy
+# → No action specified (parsing only?), use -emit=<action>
+
+# 2. stdin is the default input (the cl::opt positional arg defaults to "-"),
+#    so you can pipe programs in without a file — same as mlir-opt/mlir-translate.
 echo 'def main() { print([1, 2]); }' | ./build/bin/toyc-ch1 -emit=ast
+
+# 3. --help is flooded with generic LLVM options registered via cl::opt;
+#    only <input toy file> and -emit belong to toyc-ch1.
+./build/bin/toyc-ch1 --help | wc -l
 ```
+
+These three behaviors — action selected by a flag, stdin/`-` as default input, shared `cl::opt` option registry — are the house style of the whole MLIR tool ecosystem (`mlir-opt`, `mlir-translate`, `mlir-tblgen`), which is why every later chapter's driver feels identical.
 
 ## 6. Key Takeaways & Pitfalls
 
@@ -956,5 +844,5 @@ echo 'def main() { print([1, 2]); }' | ./build/bin/toyc-ch1 -emit=ast
 
 - Official doc: [Toy Tutorial Chapter 1: Toy Language and AST](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-1/)
 - Kaleidoscope (the frontend this chapter mirrors): [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html)
-- Next chapter: [Chapter 2](2_emitting_basic_mlir.md)
-- Back to [README](README.md)
+- Next chapter: [Chapter 2](../Ch2/README.md)
+- Back to [README](../README.md)

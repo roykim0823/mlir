@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Ch3 build delta vs Ch2: + DRR rewriter TableGen — mlir/ToyCombine.td →
+# mlir_tablegen(-gen-rewriters) → ToyCombine.inc (target ToyCh3CombineIncGen);
+# + mlir/ToyCombine.cpp in the executable.
+
 # ---------------------------------------------------------------------------
 # Standalone-mode boilerplate.
 # Runs only when this chapter is configured directly (cmake -S Ch3).

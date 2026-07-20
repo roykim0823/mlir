@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Ch5 build delta vs Ch4: + mlir/LowerToAffineLoops.cpp only. No new TableGen
+# or libraries — the affine/memref dialects and conversion passes are already
+# inside the monolithic libMLIR.dylib.
+
 # ---------------------------------------------------------------------------
 # Standalone-mode boilerplate.
 # Runs only when this chapter is configured directly (cmake -S Ch5).

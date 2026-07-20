@@ -3,14 +3,14 @@
 > **Goal:** Teach *core* MLIR passes (the inliner) and a *custom* pass (shape inference) to operate on the Toy dialect without either side hard-coding knowledge of the other — using **interfaces**.
 > Official doc: <https://mlir.llvm.org/docs/Tutorials/Toy/Ch-4/>
 
-**Chapter code in this repo:** `/Users/roy/study/mlir/toy/Ch4/` — one chapter of the out-of-tree CMake **superbuild** at `/Users/roy/study/mlir/toy/` (not built inside llvm-project), compiled against Homebrew **LLVM/MLIR 20** on macOS.
+**Chapter code in this repo:** `Ch4/` — one chapter of the out-of-tree **superbuild** described in the top-level [README](../README.md#repository-layout).
 
 | | |
 |---|---|
-| Build | `cd /Users/roy/study/mlir/toy && ./build.sh ch4` |
-| Binary | `/Users/roy/study/mlir/toy/build/bin/toyc-ch4` |
+| Build | `cd toy && ./build.sh ch4` |
+| Binary | `build/bin/toyc-ch4` |
 | Run | `./run.sh ch4` → `./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt` |
-| Test inputs | `/Users/roy/study/mlir/test_Example/Toy/Ch4/` (`codegen.toy`, `shape_inference.mlir`, ...) |
+| Test inputs | `test_Example/Toy/Ch4/` (`codegen.toy`, `shape_inference.mlir`, ...) |
 
 ---
 
@@ -65,7 +65,7 @@ MLIR ships a general-purpose inliner pass (`mlir::createInlinerPass()`). It know
 
 ### 2.1 `ToyInlinerInterface` — the dialect interface
 
-From `/Users/roy/study/mlir/toy/Ch4/mlir/Dialect.cpp`:
+***mlir/Dialect.cpp***
 
 ```cpp
 #include "mlir/Transforms/InliningUtils.h"
@@ -152,7 +152,9 @@ The inliner also needs to *find* the call graph. It does this via two op interfa
 - `CallableOpInterface` — "I am a thing that can be called; here is my region and my signature."
 - `CallOpInterface` — "I am a call; here is who I call and with what arguments."
 
-In `/Users/roy/study/mlir/toy/Ch4/include/toy/Ops.td` the interfaces are attached declaratively:
+In `include/toy/Ops.td` the interfaces are attached declaratively:
+
+***include/toy/Ops.td***
 
 ```tablegen
 include "mlir/Interfaces/FunctionInterfaces.td"
@@ -194,6 +196,8 @@ Notes on the ODS side:
 
 The C++ implementations in `Dialect.cpp`:
 
+***include/toy/Ops.td***
+
 ```cpp
 // FuncOp — the CallableOpInterface side (in Ops.td's extraClassDeclaration):
 ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
@@ -202,6 +206,8 @@ Region *getCallableRegion()       { return &getBody(); }
 ```
 
 `getCallableRegion()` returns the region the inliner should clone from — the function body. (It is defined inline in `Ops.td`'s `extraClassDeclaration` block for `FuncOp`.)
+
+***mlir/Dialect.cpp***
 
 ```cpp
 // GenericCallOp — the CallOpInterface side (Dialect.cpp):
@@ -228,7 +234,9 @@ MutableOperandRange GenericCallOp::getArgOperandsMutable() {
 - `getCallableForCallee()` returns a `CallInterfaceCallable` — either an SSA value (indirect call) or, as here, a `SymbolRefAttr` naming the callee. The inliner resolves the symbol to the `toy.func` in the module's symbol table.
 - `getArgOperands()` / `getArgOperandsMutable()` tell the inliner which operands map to the callee's block arguments.
 
-One more prerequisite lives in `/Users/roy/study/mlir/toy/Ch4/mlir/MLIRGen.cpp`: every function except `main` is marked **private**, so that once all its call sites are inlined away, the symbol-DCE built into the inliner can delete the dead function body:
+One more prerequisite lives in `mlir/MLIRGen.cpp`: every function except `main` is marked **private**, so that once all its call sites are inlined away, the symbol-DCE built into the inliner can delete the dead function body:
+
+***mlir/MLIRGen.cpp***
 
 ```cpp
 // If this function isn't main, then set the visibility to private.
@@ -242,6 +250,8 @@ This is why the "without `-opt`" dump in §6 prints `toy.func private @multiply_
 
 There is a subtlety: at the call site the arguments are `tensor<2x3xf64>`, but the callee's block arguments are `tensor<*xf64>`. If the inliner blindly wired caller SSA values into the callee body, operand types would silently change — the IR might not even verify. The inliner therefore asks the dialect to **materialize an explicit conversion** for every mismatched argument/result, via the `materializeCallConversion` hook shown in §2.1:
 
+***mlir/Dialect.cpp***
+
 ```cpp
 Operation *materializeCallConversion(OpBuilder &builder, Value input,
                                      Type resultType,
@@ -251,6 +261,8 @@ Operation *materializeCallConversion(OpBuilder &builder, Value input,
 ```
 
 If this hook returned `nullptr` for some pair of types, the inliner would simply refuse to inline that call. We support it by introducing a dedicated op, `toy.cast`, in `Ops.td`:
+
+***include/toy/Ops.td***
 
 ```tablegen
 def CastOp : Toy_Op<"cast", [
@@ -279,6 +291,8 @@ Trait/interface breakdown:
 
 - **`CastOpInterface`** marks the op as a pure type cast; generic utilities (verification, folding of redundant casts by the canonicalizer, `foldCastOp` helpers) can then reason about it. Its one required method, `areCastCompatible`, is implemented in `Dialect.cpp`:
 
+  ***mlir/Dialect.cpp***
+
   ```cpp
   bool CastOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
     if (inputs.size() != 1 || outputs.size() != 1)
@@ -301,7 +315,9 @@ Trait/interface breakdown:
 
 ### 2.4 Registering the inliner pass
 
-With policy, discovery, and conversion in place, enabling inlining is one line in `/Users/roy/study/mlir/toy/Ch4/toyc.cpp`:
+With policy, discovery, and conversion in place, enabling inlining is one line in `toyc.cpp`:
+
+***toyc.cpp***
 
 ```cpp
 // Inline all functions into main and then delete them.
@@ -310,7 +326,12 @@ pm.addPass(mlir::createInlinerPass());
 
 The inliner is a *module*-level pass: it builds the call graph from `CallOpInterface`/`CallableOpInterface`, inlines bottom-up, runs canonicalization on the intermediate results, and erases now-unreferenced private functions.
 
-**Actual IR right after the inliner** (captured from this repo with `--mlir-print-ir-after-all`; note the two materialized `toy.cast` ops and that `@multiply_transpose` is gone):
+**Actual IR right after the inliner** — reproduce with the pass-manager debug flag and read the first dump block (note the two materialized `toy.cast` ops and that `@multiply_transpose` is gone):
+
+```bash
+cd toy
+./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt --mlir-print-ir-after-all 2>&1
+```
 
 ```mlir
 // -----// IR Dump After Inliner (inline) //----- //
@@ -337,9 +358,9 @@ module {
 
 After inlining we have a single flat `main`, but the body still computes on `tensor<*xf64>`. Now we propagate shapes. Again we resist writing "a pass that switches over Toy op names"; instead we define a **new operation interface** so the pass stays generic and other dialects could plug into it.
 
-### 3.1 Declaring the interface in ODS — `ShapeInferenceInterface.td`
+### 3.1 Declaring the interface in ODS
 
-`/Users/roy/study/mlir/toy/Ch4/include/toy/ShapeInferenceInterface.td`:
+***include/toy/ShapeInferenceInterface.td***
 
 ```tablegen
 #ifndef SHAPE_INFERENCE_INTERFACE
@@ -369,7 +390,7 @@ Anatomy:
 
 `mlir-tblgen` turns this into two generated files (see §5): `ShapeInferenceOpInterfaces.h.inc` (the `ShapeInference` class declaration) and `ShapeInferenceOpInterfaces.cpp.inc` (its concept/model machinery). They are pulled into the build by two hand-written files:
 
-`/Users/roy/study/mlir/toy/Ch4/include/toy/ShapeInferenceInterface.h`:
+***include/toy/ShapeInferenceInterface.h***
 
 ```cpp
 #include "mlir/IR/OpDefinition.h"
@@ -392,6 +413,8 @@ Internally MLIR uses a *concept-based polymorphism* model (like `llvm::Any`/type
 
 In `Ops.td`, every op whose result shape can be computed from its operand shapes opts in:
 
+***include/toy/Ops.td***
+
 ```tablegen
 include "toy/ShapeInferenceInterface.td"
 
@@ -412,9 +435,11 @@ def CastOp : Toy_Op<"cast", [
 
 `DeclareOpInterfaceMethods<ShapeInferenceOpInterface>` adds a `void inferShapes();` declaration to each generated op class; we provide the definitions in `Dialect.cpp`. Ops that don't need inference don't participate: `toy.constant` and `toy.reshape` already produce statically shaped results by construction (`StaticShapeTensorOf<[F64]>` for reshape), `toy.print`/`toy.return` have no results, and `toy.generic_call` no longer exists after inlining.
 
-### 3.3 Implementing `inferShapes()` per op — `Dialect.cpp`
+### 3.3 Implementing `inferShapes()` per op
 
 All four implementations are small; each *refines the result type in place* from the (already-ranked) operand types:
+
+***mlir/Dialect.cpp***
 
 ```cpp
 /// AddOp: element-wise — output shape equals input shape.
@@ -442,7 +467,9 @@ Points worth noticing:
 
 ### 3.4 The `ShapeInferencePass` — a generic worklist algorithm
 
-`/Users/roy/study/mlir/toy/Ch4/mlir/ShapeInferencePass.cpp`. First, the generated interface definitions are linked in:
+First, the generated interface definitions are linked in:
+
+***mlir/ShapeInferencePass.cpp***
 
 ```cpp
 #include "toy/ShapeInferenceInterface.h"
@@ -542,7 +569,9 @@ Walk through the design:
 - **The interface dispatch** is the whole point of the chapter: `dyn_cast<ShapeInference>(op)` asks "does this op — whatever dialect it belongs to — implement the interface?" The pass never mentions `AddOp`, `MulOp`, etc. If an op needs inference but doesn't implement the interface, that's a hard error.
 - **Failure detection**: if the loop stalls (no ready op) with work remaining, shapes couldn't be fully resolved — e.g. a `toy.generic_call` survived because inlining didn't run first. The pass reports and fails. You can watch the per-op inference with `-debug-only=shape-inference` (the `DEBUG_TYPE` at the top of the file) in a debug build.
 
-The pass is exposed through a factory declared in `/Users/roy/study/mlir/toy/Ch4/include/toy/Passes.h`:
+The pass is exposed through a factory declared in `include/toy/Passes.h`:
+
+***include/toy/Passes.h***
 
 ```cpp
 namespace mlir {
@@ -552,6 +581,8 @@ std::unique_ptr<Pass> createShapeInferencePass();
 } // namespace toy
 } // namespace mlir
 ```
+
+***mlir/ShapeInferencePass.cpp***
 
 ```cpp
 /// Create a Shape Inference pass.  (ShapeInferencePass.cpp)
@@ -581,7 +612,9 @@ toy.func @main() {
 
 ## 4. The Pass Pipeline
 
-The `-opt` pipeline in `/Users/roy/study/mlir/toy/Ch4/toyc.cpp` (`dumpMLIR()`):
+The `-opt` pipeline in `toyc.cpp` (`dumpMLIR()`):
+
+***toyc.cpp***
 
 ```cpp
 if (enableOpt) {
@@ -616,7 +649,7 @@ Order matters, and each step enables the next:
 You can watch the whole cascade yourself:
 
 ```bash
-cd /Users/roy/study/mlir/toy
+cd toy
 ./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt --mlir-print-ir-after-all
 ```
 
@@ -626,155 +659,28 @@ cd /Users/roy/study/mlir/toy
 
 ## 5. Building
 
-All seven chapters build as one **out-of-tree superbuild** rooted at `/Users/roy/study/mlir/toy/` against Homebrew LLVM/MLIR 20 (`MLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir`, compiler `/opt/homebrew/opt/llvm@20/bin/clang++`, Ninja, macOS/Darwin). One `find_package(MLIR)`/`find_package(LLVM)` at the top, one shared incremental build tree, all binaries in `build/bin/`.
+The shared machinery (superbuild, presets, dual-mode guard, `build.sh`) is documented in the top-level [README, "The build system"](../README.md#the-build-system); the op/dialect TableGen pattern is in [Ch2 §6.1](../Ch2/README.md) and the DRR rewriter step in [Ch3 §5.1](../Ch3/README.md). Build this chapter with `cd toy && ./build.sh ch4` → `./build/bin/toyc-ch4`.
 
-### 5.1 Superbuild workflow — `toy/build.sh`
+### 5.1 What Chapter 4 adds to the build: interface TableGen
 
-```bash
-cd /Users/roy/study/mlir/toy
-./build.sh ch4          # configure once (if needed) + build only toyc-ch4
-./build.sh              # build all chapters
-./build.sh ch4 --fresh  # wipe build/ first, then rebuild
-# → ./build/bin/toyc-ch4
-```
+Relative to Chapter 3, [`Ch4/CMakeLists.txt`](CMakeLists.txt) adds:
 
-The script is **incremental**: it configures only when `build/CMakeCache.txt` is missing (afterwards Ninja re-runs CMake automatically when a `CMakeLists.txt` changes), and `--fresh` is the only thing that does `rm -rf build`. Configuration comes from `/Users/roy/study/mlir/toy/CMakePresets.json` (`cmake --preset default`): Ninja generator, `CMAKE_BUILD_TYPE=Release`, the Homebrew llvm@20 `clang`/`clang++` (so the C++ ABI matches the prebuilt MLIR dylibs), and `MLIR_DIR`/`LLVM_DIR` pointing at `/opt/homebrew/opt/llvm@20/lib/cmake/{mlir,llvm}`. Equivalent manual commands:
+- **`mlir/ShapeInferencePass.cpp`** in the source list.
+- A third TableGen flavor and its dependency: **`ToyCh4ShapeInferenceInterfaceIncGen`** must run before compiling, since `ShapeInferenceInterface.h` includes a generated `.h.inc`:
 
-```bash
-cmake --preset default                            # or: cmake -B build -G Ninja -S .
-cmake --build --preset default --target toyc-ch4  # or: ninja -C build toyc-ch4
-```
+  ***CMakeLists.txt***
 
-### 5.2 Top-level `CMakeLists.txt`
+  ```cmake
+  add_dependencies(toyc-ch4 ToyCh4OpsIncGen)
+  add_dependencies(toyc-ch4 ToyCh4ShapeInferenceInterfaceIncGen)
+  add_dependencies(toyc-ch4 ToyCh4CombineIncGen)
+  ```
 
-`/Users/roy/study/mlir/toy/CMakeLists.txt` holds the boilerplate that every chapter used to repeat — it runs **once** for all seven chapters:
+The interface generation itself lives in [`include/toy/CMakeLists.txt`](include/toy/CMakeLists.txt), next to the Ch2-style op generation:
+
+***include/toy/CMakeLists.txt***
 
 ```cmake
-project(toy-tutorial)
-
-find_package(MLIR REQUIRED CONFIG)
-find_package(LLVM REQUIRED CONFIG)
-
-list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-
-include(TableGen)
-include(AddLLVM)
-include(AddMLIR)
-include(HandleLLVMOptions)
-
-include_directories(${MLIR_INCLUDE_DIRS}
-                    ${LLVM_INCLUDE_DIRS})
-
-# Collect every chapter binary in build/bin/ instead of build/ChN/.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-add_subdirectory(Ch1)
-add_subdirectory(Ch2)
-...
-add_subdirectory(Ch7)
-```
-
-### 5.3 Chapter `CMakeLists.txt` — dual-mode
-
-`/Users/roy/study/mlir/toy/Ch4/CMakeLists.txt` is **dual-mode**: the same boilerplate is kept, but wrapped in a guard so it only executes when the chapter is configured *directly* (standalone), not when it is pulled in by the superbuild's `add_subdirectory(Ch4)`:
-
-```cmake
-cmake_minimum_required(VERSION 3.20)
-
-# ---------------------------------------------------------------------------
-# Standalone-mode boilerplate.
-# Runs only when this chapter is configured directly (cmake -S Ch4).
-# In the superbuild (cmake -S toy/), ../CMakeLists.txt already did all this.
-# ---------------------------------------------------------------------------
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "macOS Deployment Target" FORCE)
-  endif()
-  project(toy-ch4)
-
-  find_package(MLIR REQUIRED CONFIG)
-  find_package(LLVM REQUIRED CONFIG)
-
-  list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-  list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-
-  include(TableGen)
-  include(AddLLVM)
-  include(AddMLIR)
-  include(HandleLLVMOptions)
-
-  include_directories(${MLIR_INCLUDE_DIRS}
-                      ${LLVM_INCLUDE_DIRS})
-endif()
-
-# ---------------------------------------------------------------------------
-# Chapter targets
-# ---------------------------------------------------------------------------
-include_directories(include)
-add_subdirectory(include)
-
-set(LLVM_TARGET_DEFINITIONS mlir/ToyCombine.td)
-mlir_tablegen(ToyCombine.inc -gen-rewriters)
-add_public_tablegen_target(ToyCh4CombineIncGen)
-
-add_executable(toyc-ch4
-  toyc.cpp
-  parser/AST.cpp
-  mlir/MLIRGen.cpp
-  mlir/Dialect.cpp
-  mlir/ShapeInferencePass.cpp
-  mlir/ToyCombine.cpp
-  )
-
-add_dependencies(toyc-ch4 ToyCh4OpsIncGen)
-add_dependencies(toyc-ch4 ToyCh4ShapeInferenceInterfaceIncGen)
-add_dependencies(toyc-ch4 ToyCh4CombineIncGen)
-
-include_directories(${CMAKE_CURRENT_BINARY_DIR})
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/include/)
-
-target_link_libraries(toyc-ch4
-  PRIVATE
-    MLIR                        # libMLIR.dylib (all dialects, passes, conversions)
-    LLVM                        # libLLVM.dylib (all targets, all components)
-    )
-```
-
-The `if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)` test is the standard CMake idiom for "am I the top-level project?" — in the superbuild `CMAKE_SOURCE_DIR` is `toy/` while `CMAKE_CURRENT_SOURCE_DIR` is `toy/Ch4/`, so the guard is skipped and the chapter relies on the packages/macros/include dirs the top level already set up. The **chapter targets** below the guard are unchanged from the per-chapter layout. Compared to Chapter 3, what's new in them:
-
-- **`mlir/ShapeInferencePass.cpp`** joins the source list.
-- A new tablegen dependency, **`ToyCh4ShapeInferenceInterfaceIncGen`** (below), must run before compiling, since `ShapeInferenceInterface.h` includes a generated `.h.inc`.
-- Linking is against the Homebrew **monolithic** `libMLIR.dylib`/`libLLVM.dylib` rather than the dozens of fine-grained static `MLIR*` libraries used in-tree — a pragmatic choice for an out-of-tree study project (the upstream chapter links `MLIRCallInterfaces`, `MLIRCastInterfaces`, `MLIRFunctionInterfaces`, `MLIRTransforms`, etc. individually).
-
-Because generated files land in the chapter's *binary* dir (`${CMAKE_CURRENT_BINARY_DIR}`), the `.inc` files for the superbuild live under `/Users/roy/study/mlir/toy/build/Ch4/` — `ToyCombine.inc` at its top and the ODS/interface output under `build/Ch4/include/toy/` (in a standalone configure they would land under `Ch4/build/` instead).
-
-**Standalone mode is still possible** — the guard exists precisely so each chapter remains a self-contained example:
-
-```bash
-cd /Users/roy/study/mlir/toy
-cmake -S Ch4 -B Ch4/build -G Ninja \
-  -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang \
-  -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++ \
-  -DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir \
-  -DLLVM_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/llvm
-cmake --build Ch4/build
-# → Ch4/build/toyc-ch4  (run.sh falls back to this path if build/bin/ has no binary)
-```
-
-### 5.4 Interface tablegen — `include/toy/CMakeLists.txt`
-
-`/Users/roy/study/mlir/toy/Ch4/include/toy/CMakeLists.txt`:
-
-```cmake
-# Most dialects should use add_mlir_dialect().  See examples/standalone.
-set(LLVM_TARGET_DEFINITIONS Ops.td)
-mlir_tablegen(Ops.h.inc -gen-op-decls)
-mlir_tablegen(Ops.cpp.inc -gen-op-defs)
-mlir_tablegen(Dialect.h.inc -gen-dialect-decls)
-mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs)
-add_public_tablegen_target(ToyCh4OpsIncGen)
-
 # Most dialects should use add_mlir_interfaces().
 set(LLVM_TARGET_DEFINITIONS ShapeInferenceInterface.td)
 mlir_tablegen(ShapeInferenceOpInterfaces.h.inc -gen-op-interface-decls)
@@ -782,14 +688,12 @@ mlir_tablegen(ShapeInferenceOpInterfaces.cpp.inc -gen-op-interface-defs)
 add_public_tablegen_target(ToyCh4ShapeInferenceInterfaceIncGen)
 ```
 
-The second block is the Chapter 4 addition: `mlir-tblgen` is invoked on `ShapeInferenceInterface.td` with
-
 - **`-gen-op-interface-decls`** → `ShapeInferenceOpInterfaces.h.inc` — the `ShapeInference` interface class (included by `ShapeInferenceInterface.h`);
 - **`-gen-op-interface-defs`** → `ShapeInferenceOpInterfaces.cpp.inc` — the interface's registration/model definitions (included by `ShapeInferencePass.cpp`).
 
-(As the comments note, upstream projects would typically wrap these with the `add_mlir_dialect()` / `add_mlir_interfaces()` convenience macros — this repo spells them out, which is more instructive.)
+(As the file's comments note, upstream projects would typically wrap all of this in the `add_mlir_dialect()` / `add_mlir_interfaces()` convenience macros — this repo spells the steps out, which is more instructive.) In the superbuild everything generates into `toy/build/Ch4/include/toy/`.
 
-In the superbuild these generate into `/Users/roy/study/mlir/toy/build/Ch4/include/toy/` — `Ops.h.inc`, `Ops.cpp.inc`, `Dialect.h.inc`, `Dialect.cpp.inc`, `ShapeInferenceOpInterfaces.h.inc`, `ShapeInferenceOpInterfaces.cpp.inc`.
+Linking is still just the monolithic `MLIR` + `LLVM` dylibs — the upstream chapter would add `MLIRCallInterfaces`, `MLIRCastInterfaces`, `MLIRFunctionInterfaces`, `MLIRTransforms`, etc. as individual components.
 
 ---
 
@@ -797,7 +701,7 @@ In the superbuild these generate into `/Users/roy/study/mlir/toy/build/Ch4/inclu
 
 ### 6.1 The input program
 
-`/Users/roy/study/mlir/test_Example/Toy/Ch4/codegen.toy`:
+***test_Example/Toy/Ch4/codegen.toy***
 
 ```toy
 # User defined generic function that operates on unknown shaped arguments
@@ -819,8 +723,8 @@ Note: `a` and `b` hold the *same six values* shaped `<2,3>` (one from a nested l
 ### 6.2 Without `-opt` — the raw codegen
 
 ```bash
-cd /Users/roy/study/mlir/toy
-./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir
+cd toy
+./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir 2>&1
 ```
 
 Actual output:
@@ -855,8 +759,9 @@ What to observe:
 ### 6.3 With `-opt` — inlined, shape-inferred, canonicalized, CSE'd
 
 ```bash
-cd /Users/roy/study/mlir/toy
-./run.sh ch4      # = ./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt
+cd toy
+./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt 2>&1
+# or via the wrapper: ./run.sh ch4
 ```
 
 Actual output:
@@ -889,7 +794,7 @@ Everything this chapter built is visible in the diff:
 The full pass-by-pass story (this is real output from this repo, elided):
 
 ```bash
-./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt --mlir-print-ir-after-all
+./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt --mlir-print-ir-after-all 2>&1
 ```
 
 ```mlir
@@ -919,9 +824,11 @@ The full pass-by-pass story (this is real output from this repo, elided):
 %2 = toy.mul %1, %1 : tensor<3x2xf64>
 ```
 
+**The ecosystem view.** Look at the parenthesized names in those dump headers: `(inline)`, `(canonicalize)`, `(cse)` are the *registered pass names*, and three of the four passes in this chapter's pipeline are stock MLIR passes — the same ones any `mlir-opt`-family tool exposes as `--inline`, `--canonicalize`, `--cse`. Only `(toy-shape-inference)` is chapter-local. `toyc-ch4 -opt` is therefore just a hardcoded rendering of the pipeline `mlir-opt --pass-pipeline='builtin.module(inline, toy.func(toy-shape-inference, canonicalize, cse))'` inside a binary that happens to link the Toy dialect and its one custom pass — which is precisely how real MLIR projects structure their `foo-opt` tools.
+
 ### 6.5 Other test inputs
 
-`/Users/roy/study/mlir/test_Example/Toy/Ch4/` also contains `shape_inference.mlir` (a pre-written `.mlir` module exercising the pipeline directly — feed it with `-x mlir`... or just by its `.mlir` extension, which `loadMLIR()` in `toyc.cpp` detects), plus `ast.toy`, `scalar.toy`, `trivial_reshape.toy`, `transpose_transpose.toy`, and `invalid.mlir` from earlier chapters:
+`test_Example/Toy/Ch4/` also contains `shape_inference.mlir` (a pre-written `.mlir` module exercising the pipeline directly — feed it with `-x mlir`... or just by its `.mlir` extension, which `loadMLIR()` in `toyc.cpp` detects), plus `ast.toy`, `scalar.toy`, `trivial_reshape.toy`, `transpose_transpose.toy`, and `invalid.mlir` from earlier chapters:
 
 ```bash
 ./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/shape_inference.mlir -emit=mlir -opt
@@ -955,7 +862,7 @@ The full pass-by-pass story (this is real output from this repo, elided):
 ## Links
 
 - Official doc: [Toy Tutorial Chapter 4 — Enabling Generic Transformation with Interfaces](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-4/)
-- Previous: [Chapter 3: High-level Language-Specific Analysis and Transformation](3_high_level_transformations.md)
-- Next: [Chapter 5: Partial Lowering to Lower-Level Dialects for Optimization](5_partial_lowering.md)
-- Back to [README](README.md)
+- Previous: [Chapter 3: High-level Language-Specific Analysis and Transformation](../Ch3/README.md)
+- Next: [Chapter 5: Partial Lowering to Lower-Level Dialects for Optimization](../Ch5/README.md)
+- Back to [README](../README.md)
 - Related MLIR docs: [Interfaces](https://mlir.llvm.org/docs/Interfaces/), [Operation Definition Specification (ODS)](https://mlir.llvm.org/docs/DefiningDialects/Operations/), [Pass Infrastructure](https://mlir.llvm.org/docs/PassManagement/)

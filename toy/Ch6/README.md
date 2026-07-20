@@ -2,11 +2,7 @@
 
 > **Goal:** Complete the lowering journey — take the mixed `toy`/`affine`/`arith`/`memref` IR from Chapter 5 all the way down to the LLVM dialect, translate it to real LLVM IR, and execute it with a JIT — following the official tutorial [Toy Ch-6: Lowering to LLVM and CodeGeneration](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-6/).
 
-**Chapter code:** [`Ch6/`](Ch6/) — an out-of-tree CMake project (NOT built inside llvm-project), built as part of the repo-wide **superbuild** at [`toy/CMakeLists.txt`](CMakeLists.txt) against **Homebrew LLVM/MLIR 20** on macOS (configured via [`CMakePresets.json`](CMakePresets.json)):
-
-- `MLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir`
-- Compiler: `/opt/homebrew/opt/llvm@20/bin/clang++`
-- Generator: Ninja
+**Chapter code:** [`Ch6/`](./) — one chapter of the repo-wide out-of-tree **superbuild**; the shared layout and pinned toolchain are documented in the top-level [README](../README.md#repository-layout):
 
 ```bash
 cd toy && ./build.sh ch6     # produces ./build/bin/toyc-ch6 (incremental; --fresh to wipe)
@@ -17,7 +13,7 @@ cd toy && ./build.sh ch6     # produces ./build/bin/toyc-ch6 (incremental; --fre
 > linking pitfall where mixing static `.a` MLIR libraries with `libMLIR.dylib` causes a
 > **TypeID-duplication segfault** inside `StorageUniquer` on *any* pass run. See
 > [Section 7](#7-key-takeaways--pitfalls) and the full write-up in
-> [MLIR_LINKING_PITFALL.md](Ch6/MLIR_LINKING_PITFALL.md).
+> [MLIR_LINKING_PITFALL.md](MLIR_LINKING_PITFALL.md).
 
 ---
 
@@ -63,18 +59,20 @@ Files touched in this chapter:
 
 | File | Role |
 |---|---|
-| [`Ch6/mlir/LowerToLLVM.cpp`](Ch6/mlir/LowerToLLVM.cpp) | `PrintOpLowering` + `ToyToLLVMLoweringPass` (full conversion to the LLVM dialect) |
-| [`Ch6/toyc.cpp`](Ch6/toyc.cpp) | New actions `-emit=mlir-llvm`, `-emit=llvm`, `-emit=jit`; `dumpLLVMIR()` and `runJit()` |
-| [`Ch6/CMakeLists.txt`](Ch6/CMakeLists.txt) | Links the ExecutionEngine — the interesting (and dangerous) part on macOS |
-| [`Ch6/MLIR_LINKING_PITFALL.md`](Ch6/MLIR_LINKING_PITFALL.md) | Post-mortem of the static+shared TypeID segfault |
+| [`Ch6/mlir/LowerToLLVM.cpp`](mlir/LowerToLLVM.cpp) | `PrintOpLowering` + `ToyToLLVMLoweringPass` (full conversion to the LLVM dialect) |
+| [`Ch6/toyc.cpp`](toyc.cpp) | New actions `-emit=mlir-llvm`, `-emit=llvm`, `-emit=jit`; `dumpLLVMIR()` and `runJit()` |
+| [`Ch6/CMakeLists.txt`](CMakeLists.txt) | Links the ExecutionEngine — the interesting (and dangerous) part on macOS |
+| [`Ch6/MLIR_LINKING_PITFALL.md`](MLIR_LINKING_PITFALL.md) | Post-mortem of the static+shared TypeID segfault |
 
 ---
 
 ## 2. Lowering `toy.print` — `PrintOpLowering` in depth
 
-`toy.print` has no direct LLVM equivalent, so we lower it to what a C programmer would write: a loop nest calling `printf("%f ", elt)` for every element, with a newline after each row. All code below is the real code from [`Ch6/mlir/LowerToLLVM.cpp`](Ch6/mlir/LowerToLLVM.cpp).
+`toy.print` has no direct LLVM equivalent, so we lower it to what a C programmer would write: a loop nest calling `printf("%f ", elt)` for every element, with a newline after each row. All code below is the real code from [`Ch6/mlir/LowerToLLVM.cpp`](mlir/LowerToLLVM.cpp).
 
 The file header sums up the plan:
+
+***mlir/LowerToLLVM.cpp***
 
 ```cpp
 //                         Affine --
@@ -89,6 +87,8 @@ The file header sums up the plan:
 Note the key trick: `PrintOpLowering` does **not** emit LLVM-dialect loops directly. It emits `scf.for` loops and `memref.load`s — *higher-level* dialects — and lets the other conversion patterns in the very same `applyFullConversion` run lower those to `cf` branches and LLVM GEPs. That is transitive lowering in action.
 
 ### 2.1 The pattern skeleton
+
+***mlir/LowerToLLVM.cpp***
 
 ```cpp
 /// Lowers `toy.print` to a loop nest calling `printf` on each of the individual
@@ -125,6 +125,8 @@ Two things to notice:
 ### 2.2 Format strings as `llvm.mlir.global`
 
 C string literals become module-level LLVM globals. `getOrCreateGlobalString` creates (once, memoized by symbol lookup) an internal constant global holding the raw bytes, then computes a pointer to its first character:
+
+***mlir/LowerToLLVM.cpp***
 
 ```cpp
   /// Return a value representing an access into a global string with the given
@@ -167,6 +169,8 @@ Step by step:
 
 `printf` is variadic: `i32 (ptr, ...)`. The helper builds that function type and inserts a body-less `llvm.func` declaration at the top of the module (again, only if it isn't already there):
 
+***mlir/LowerToLLVM.cpp***
+
 ```cpp
   /// Create a function declaration for printf, the signature is:
   ///   * `i32 (i8*, ...)`
@@ -200,6 +204,8 @@ The return value is a `FlatSymbolRefAttr` — calls reference the function *by s
 ### 2.4 Generating the loop nest
 
 Back in `matchAndRewrite`, one `scf.for` is created per memref dimension:
+
+***mlir/LowerToLLVM.cpp***
 
 ```cpp
     // Create a loop for each of the dimensions within the shape.
@@ -255,9 +261,11 @@ The emitted `scf.for` + `memref.load` ops are *illegal* for our conversion targe
 
 ## 3. Full Conversion to the LLVM Dialect
 
-The pass at the bottom of [`Ch6/mlir/LowerToLLVM.cpp`](Ch6/mlir/LowerToLLVM.cpp) assembles target + type converter + patterns and runs a **full** conversion.
+The pass at the bottom of [`Ch6/mlir/LowerToLLVM.cpp`](mlir/LowerToLLVM.cpp) assembles target + type converter + patterns and runs a **full** conversion.
 
 ### 3.1 The conversion target — `LLVMConversionTarget`
+
+***mlir/LowerToLLVM.cpp***
 
 ```cpp
 void ToyToLLVMLoweringPass::runOnOperation() {
@@ -279,6 +287,8 @@ The pass also declares the dialects it may *create* during lowering, so the cont
 ```
 
 ### 3.2 The type converter — `LLVMTypeConverter` and the memref descriptor
+
+***mlir/LowerToLLVM.cpp***
 
 ```cpp
   LLVMTypeConverter typeConverter(&getContext());
@@ -304,6 +314,8 @@ A ranked memref lowers to exactly this five-field struct: two pointers (the raw 
 Since Toy's own tensor types were already eliminated in Chapter 5, the stock converter needs no customization.
 
 ### 3.3 The patterns — one `populate*` per lowering edge
+
+***mlir/LowerToLLVM.cpp***
 
 ```cpp
   RewritePatternSet patterns(&getContext());
@@ -337,6 +349,8 @@ This is the tutorial's "transitive lowering" payoff: nobody wrote an `affine.for
 
 ### 3.4 `applyFullConversion`
 
+***mlir/LowerToLLVM.cpp***
+
 ```cpp
   // We want to completely lower to LLVM, so we use a `FullConversion`. This
   // ensures that only legal operations will remain after the conversion.
@@ -348,9 +362,11 @@ This is the tutorial's "transitive lowering" payoff: nobody wrote an `affine.for
 
 Unlike Chapter 5's `applyPartialConversion`, `applyFullConversion` fails if *any* illegal op survives. If you forget one `populate…` call, you get a precise diagnostic naming the un-lowered op — much better than silently emitting broken IR.
 
-### 3.5 Pipeline registration in `toyc.cpp` — plus a repo-specific fix
+### 3.5 Pipeline registration — plus a repo-specific fix
 
-The driver ([`Ch6/toyc.cpp`](Ch6/toyc.cpp), in `loadAndProcessMLIR`) appends the new stage when `-emit` is `mlir-llvm` or beyond:
+The driver ([`Ch6/toyc.cpp`](toyc.cpp), in `loadAndProcessMLIR`) appends the new stage when `-emit` is `mlir-llvm` or beyond:
+
+***toyc.cpp***
 
 ```cpp
   if (isLoweringToLLVM) {
@@ -388,9 +404,11 @@ The chapter also registers two capabilities in `main()` that Ch5 didn't need:
 
 ## 4. Emitting LLVM IR and Running the JIT
 
-Once the module contains only LLVM-dialect ops, two new code paths in [`Ch6/toyc.cpp`](Ch6/toyc.cpp) take over.
+Once the module contains only LLVM-dialect ops, two new code paths in [`Ch6/toyc.cpp`](toyc.cpp) take over.
 
 ### 4.1 `dumpLLVMIR` — MLIR → `llvm::Module`
+
+***toyc.cpp***
 
 ```cpp
 int dumpLLVMIR(mlir::ModuleOp module) {
@@ -446,6 +464,8 @@ Then the target is configured and an optional LLVM optimization pipeline runs:
 
 ### 4.2 `runJit` — executing `main` in-process
 
+***toyc.cpp***
+
 ```cpp
 int runJit(mlir::ModuleOp module) {
   // Initialize LLVM targets.
@@ -488,55 +508,30 @@ int runJit(mlir::ModuleOp module) {
 
 ## 5. Building — CMakeLists walkthrough (and dodging the linking trap)
 
-This chapter is where out-of-tree builds get genuinely tricky, because `ExecutionEngine` drags LLVM's JIT and native codegen into the link.
+The shared machinery (superbuild, presets, dual-mode guard, `build.sh`) is documented in the top-level [README, "The build system"](../README.md#the-build-system). Build this chapter with `cd toy && ./build.sh ch6` → `./build/bin/toyc-ch6`.
 
-The repo uses a **superbuild**: the top-level [`toy/CMakeLists.txt`](CMakeLists.txt) does the `find_package(MLIR/LLVM)` + `include(TableGen/AddLLVM/AddMLIR/HandleLLVMOptions)` boilerplate exactly once, sets `CMAKE_RUNTIME_OUTPUT_DIRECTORY` to `build/bin/` (so every chapter binary lands in one place), and then `add_subdirectory(Ch1)` … `add_subdirectory(Ch7)`. Compilers and `MLIR_DIR`/`LLVM_DIR` come from [`CMakePresets.json`](CMakePresets.json) (Ninja, Release, Homebrew llvm@20).
+This chapter is where out-of-tree builds get genuinely tricky, because `ExecutionEngine` drags LLVM's JIT and native codegen into the link. Relative to Chapter 5, [`Ch6/CMakeLists.txt`](CMakeLists.txt) adds three things: a feature guard, one source file, and a *changed link line* — the last one is the part that matters.
 
-[`Ch6/CMakeLists.txt`](Ch6/CMakeLists.txt) is therefore **dual-mode**: the boilerplate is wrapped in a guard so it only runs when the chapter is configured *standalone*, and is skipped in the superbuild:
+***CMakeLists.txt***
 
 ```cmake
-# Runs only when this chapter is configured directly (cmake -S Ch6).
-# In the superbuild (cmake -S toy/), ../CMakeLists.txt already did all this.
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(toy-ch6)
-
-  find_package(MLIR REQUIRED CONFIG)   # MLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir
-  find_package(LLVM REQUIRED CONFIG)
-
-  list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-  list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-  include(TableGen)
-  include(AddLLVM)
-  include(AddMLIR)
-  include(HandleLLVMOptions)
-
-  include_directories(${MLIR_INCLUDE_DIRS} ${LLVM_INCLUDE_DIRS})
-endif()
-
 # This chapter depends on JIT support enabled.
 if(NOT MLIR_ENABLE_EXECUTION_ENGINE)
   return()
 endif()
 
-set(LLVM_TARGET_DEFINITIONS mlir/ToyCombine.td)
-mlir_tablegen(ToyCombine.inc -gen-rewriters)
-add_public_tablegen_target(ToyCh6CombineIncGen)
-
 add_executable(toyc-ch6
-  toyc.cpp
-  parser/AST.cpp
-  mlir/MLIRGen.cpp
-  mlir/Dialect.cpp
-  mlir/LowerToAffineLoops.cpp
-  mlir/LowerToLLVM.cpp
-  mlir/ShapeInferencePass.cpp
-  mlir/ToyCombine.cpp
+  ...
+  mlir/LowerToLLVM.cpp     # <-- NEW this chapter
+  ...
   )
 ```
 
-Same shape as previous chapters (find packages, include MLIR's CMake macros, tablegen the ODS/DRR files), plus a guard: the Homebrew MLIR must have been built with `MLIR_ENABLE_EXECUTION_ENGINE=ON` (it is).
+The guard requires the installed MLIR to have been built with `MLIR_ENABLE_EXECUTION_ENGINE=ON` (Homebrew's is).
 
 ### 5.1 The link line — the part that matters
+
+***CMakeLists.txt***
 
 ```cmake
 # NOTE: link ONLY shared MLIR/LLVM libraries here. Mixing static .a archives
@@ -549,7 +544,7 @@ target_link_libraries(toyc-ch6
     )
 ```
 
-That's it. **Two shared libraries, zero static archives.** This is deliberate (the `NOTE` comment now guards it in the file itself), and it is how this repo avoids the segfault documented in [MLIR_LINKING_PITFALL.md](Ch6/MLIR_LINKING_PITFALL.md):
+That's it. **Two shared libraries, zero static archives.** This is deliberate (the `NOTE` comment now guards it in the file itself), and it is how this repo avoids the segfault documented in [MLIR_LINKING_PITFALL.md](MLIR_LINKING_PITFALL.md):
 
 - The upstream Toy Ch6 CMakeLists links dozens of *static* targets: `${dialect_libs}`, `${conversion_libs}`, `${extension_libs}`, `MLIRExecutionEngine`, `MLIRAnalysis`, `MLIRIR`, `MLIRPass`, … That works inside llvm-project's own build tree.
 - But against **Homebrew LLVM**, the static `MLIRExecutionEngine` target carries `INTERFACE_LINK_LIBRARIES "LLVM;MLIR"` — and `MLIR` there means **`libMLIR.dylib`**. The linker then pulls in *both* the static `.a` copies of MLIR *and* the dylib → two copies of every TypeID static → runtime segfault (details in Section 7).
@@ -567,40 +562,13 @@ build/bin/toyc-ch6:
 	/usr/lib/libSystem.B.dylib
 ```
 
-Exactly one copy of MLIR and one of LLVM in the process — consistent TypeIDs.
-
-### 5.2 build.sh — the superbuild workflow
-
-One [`build.sh`](build.sh) at `toy/` drives all chapters through a single shared, **incremental** build tree:
-
-```bash
-cd toy
-./build.sh ch6          # configure once (if needed) + build only toyc-ch6
-./build.sh              # build everything (ch1..ch7)
-./build.sh ch6 --fresh  # wipe build/ first, then rebuild
-```
-
-The script configures with `cmake --preset default` only when `build/CMakeCache.txt` doesn't exist yet (afterwards Ninja re-runs CMake automatically when a CMakeLists.txt changes), then runs `cmake --build --preset default [--target toyc-ch6]`. Binaries land in `build/bin/toyc-ch{1..7}`.
-
-The `default` preset in [`CMakePresets.json`](CMakePresets.json) resolves `MLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir` and `CMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++`. Building with Homebrew's own clang++ matters: MLIR headers must be compiled with a compiler/stdlib ABI-compatible with the prebuilt dylibs.
-
-Thanks to the dual-mode guard from Section 5, the chapter can still be configured **standalone**, without the superbuild:
-
-```bash
-cd toy
-cmake -S Ch6 -B Ch6/build -G Ninja \
-  -DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir \
-  -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++
-cmake --build Ch6/build      # produces Ch6/build/toyc-ch6
-```
-
-(`run.sh` looks for binaries in `build/bin/` first and falls back to `ChN/build/`, so both layouts work.)
+Exactly one copy of MLIR and one of LLVM in the process — consistent TypeIDs. (Building with Homebrew's own clang++ — pinned in the preset — also matters here: MLIR headers must be compiled with a compiler/stdlib ABI-compatible with these prebuilt dylibs.)
 
 ---
 
 ## 6. Running and Testing
 
-`cd toy && ./run.sh ch6` pipes one program through all five emit levels — [`run.sh`](run.sh) prints a `== -emit=<mode> ==` header before each mode, then runs the equivalent of:
+`cd toy && ./run.sh ch6` pipes one program through all five emit levels — [`run.sh`](../run.sh) prints a `== -emit=<mode> ==` header before each mode, then runs the equivalent of:
 
 ```bash
 echo 'def main() { print([[1, 2], [3, 4]]); }' | ./build/bin/toyc-ch6 -emit=mlir
@@ -613,6 +581,11 @@ echo 'def main() { print([[1, 2], [3, 4]]); }' | ./build/bin/toyc-ch6 -emit=jit
 All outputs below are **real captures** from this repo (Apple Silicon, LLVM 20), shown without the `== -emit=<mode> ==` headers.
 
 ### 6.1 `-emit=mlir` — pure Toy dialect
+
+```bash
+cd toy
+echo 'def main() { print([[1, 2], [3, 4]]); }' | ./build/bin/toyc-ch6 -emit=mlir 2>&1
+```
 
 ```mlir
 module {
@@ -627,6 +600,10 @@ module {
 Straight from `mlirGen`: values are still abstract `tensor`s, printing is one opaque op.
 
 ### 6.2 `-emit=mlir-affine` — after Chapter 5's partial lowering
+
+```bash
+echo 'def main() { print([[1, 2], [3, 4]]); }' | ./build/bin/toyc-ch6 -emit=mlir-affine 2>&1
+```
 
 ```mlir
 module {
@@ -650,6 +627,10 @@ module {
 Tensors became a heap `memref<2x2xf64>` with element-wise `affine.store`s (the constant is small, so no loops were needed). Crucially, **`toy.print` survived** — but its operand type changed to `memref`, which is exactly what `PrintOpLowering` expects.
 
 ### 6.3 `-emit=mlir-llvm` — after `ToyToLLVMLoweringPass` (still MLIR!)
+
+```bash
+echo 'def main() { print([[1, 2], [3, 4]]); }' | ./build/bin/toyc-ch6 -emit=mlir-llvm 2>&1
+```
 
 Abbreviated; the full dump is ~90 lines:
 
@@ -716,6 +697,10 @@ Everything from Sections 2–3 is visible here:
 
 ### 6.4 `-emit=llvm` — genuine LLVM IR
 
+```bash
+echo 'def main() { print([[1, 2], [3, 4]]); }' | ./build/bin/toyc-ch6 -emit=llvm 2>&1
+```
+
 Abbreviated real output (unoptimized, `-opt` not passed):
 
 ```llvm
@@ -778,13 +763,35 @@ The ExecutionEngine JIT-compiled `main` to AArch64 code, `invokePacked("main")` 
 
 For debugging, `--mlir-print-ir-after-all` prints the IR after every pass in the pipeline, which is invaluable for watching each lowering stage in sequence.
 
+### 6.6 The ecosystem view: replace the backend with stock tools
+
+Once the module is pure LLVM dialect (`-emit=mlir-llvm`), Toy is out of the picture — so from that point on, the *stock* Homebrew tools can finish the job. This pipeline runs the Toy program without `toyc-ch6`'s `dumpLLVMIR`/`runJit` at all (verified on this machine, same matrix output as §6.5):
+
+```bash
+export P=/opt/homebrew/opt/llvm@20/bin
+echo 'def main() { print([[1, 2], [3, 4]]); }' \
+  | ./build/bin/toyc-ch6 -emit=mlir-llvm 2>&1 \
+  | $P/mlir-translate --mlir-to-llvmir \
+  | $P/lli
+# 1.000000 2.000000
+# 3.000000 4.000000
+```
+
+Each stage is one of the chapter's concepts as a standalone tool:
+
+- **`toyc-ch6 -emit=mlir-llvm`** — the frontend + all dialect *conversions* (Sections 2–3). This is the last stage that needs the Toy dialect linked in.
+- **`mlir-translate --mlir-to-llvmir`** — the *translation* of Section 4.1 (`translateModuleToLLVMIR`) as a stock binary; it works because the LLVM dialect is upstream, so no custom registration is needed. Conversion vs. translation being different mechanisms (takeaway 4) is literally visible as two different tools.
+- **`lli`** — LLVM's own JIT, standing in for Section 4.2's `runJit`/ExecutionEngine (both sit on ORC underneath); it resolves `printf`/`malloc`/`free` against the host libc the same way. Swap `lli` for `$P/llc -filetype=obj -o toy.o` and you have an object file for a real linker instead — the AOT exit ramp from the same IR.
+
+`toyc-ch6` bundles these stages into one process for convenience (and to avoid textual round-trips); the pipe shows they remain independently replaceable pieces of the LLVM/MLIR ecosystem.
+
 ---
 
 ## 7. Key Takeaways & Pitfalls
 
 ### ⚠️ Pitfall #1 (the big one): static + shared MLIR libs ⇒ TypeID-duplication segfault
 
-Documented in full in **[MLIR_LINKING_PITFALL.md](Ch6/MLIR_LINKING_PITFALL.md)** — read it before writing your own out-of-tree JIT-using project. Summary:
+Documented in full in **[MLIR_LINKING_PITFALL.md](MLIR_LINKING_PITFALL.md)** — read it before writing your own out-of-tree JIT-using project. Summary:
 
 - **Root cause.** MLIR's TypeID system identifies types/interfaces by *the address of a static variable* in a template instantiation. The Homebrew CMake target `MLIRExecutionEngine` (static) has `INTERFACE_LINK_LIBRARIES "LLVM;MLIR"`, where `MLIR` = `libMLIR.dylib`. If your `target_link_libraries` also lists static `.a` MLIR libraries (`${dialect_libs}`, `${conversion_libs}`, `MLIRIR`, `MLIRPass`, …), the linker pulls in **both** the static archives and the dylib. Two copies of every TypeID static now live in the process, at different addresses ⇒ the "same" type gets two different TypeIDs ⇒ `StorageUniquer` can't find registered types/attributes and dereferences an invalid pointer.
 - **Symptoms.** `EXC_BAD_ACCESS` crash inside `mlir::detail::StorageUniquerImpl::getOrCreate`, triggered by **any pass run** (`PassManager::run`) — not just JIT. Deeply misleading, because the crash is in generic MLIR infrastructure, nowhere near your code.
@@ -815,7 +822,7 @@ Dialect conversion inserts `builtin.unrealized_conversion_cast` bridge ops at ty
 ## Links
 
 - Official tutorial: [Toy Ch-6 — Lowering to LLVM and CodeGeneration](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-6/)
-- Linking post-mortem: [MLIR_LINKING_PITFALL.md](Ch6/MLIR_LINKING_PITFALL.md)
-- Previous: [Chapter 5 — Partial Lowering to Affine](5_partial_lowering.md)
-- Next: [Chapter 7 — Struct Types](7_struct_types.md)
-- Back to [README](README.md)
+- Linking post-mortem: [MLIR_LINKING_PITFALL.md](MLIR_LINKING_PITFALL.md)
+- Previous: [Chapter 5 — Partial Lowering to Affine](../Ch5/README.md)
+- Next: [Chapter 7 — Struct Types](../Ch7/README.md)
+- Back to [README](../README.md)

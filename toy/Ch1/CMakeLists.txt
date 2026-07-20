@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Ch1 build delta: the baseline. No TableGen (no dialect yet); links only
+# MLIRSupport — Chapter 1 uses LLVM support utilities, no MLIR IR.
+
 # ---------------------------------------------------------------------------
 # Standalone-mode boilerplate.
 # Runs only when this chapter is configured directly (cmake -S Ch1).

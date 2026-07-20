@@ -3,7 +3,7 @@
 > Goal: lower the *computationally heavy* Toy operations to a mix of the `affine`, `arith`, and `memref` dialects using MLIR's **dialect conversion framework** — while deliberately keeping `toy.print` in the Toy dialect — and then reuse existing affine optimizations (loop fusion, scalar replacement) on the result.
 > Official doc: <https://mlir.llvm.org/docs/Tutorials/Toy/Ch-5/>
 
-**Chapter code:** [`/Users/roy/study/mlir/toy/Ch5/`](Ch5/) — one chapter of the out-of-tree CMake **superbuild** at [`/Users/roy/study/mlir/toy/`](CMakeLists.txt), built against Homebrew LLVM/MLIR 20 (not built inside `llvm-project`). The chapter can also still be configured standalone — see §6.
+**Chapter code:** [`Ch5/`](./) — one chapter of the out-of-tree **superbuild** described in the top-level [README](../README.md#repository-layout). The chapter can also still be configured standalone — see §6.
 
 ---
 
@@ -57,7 +57,9 @@ Chapter 3's canonicalization used the *greedy* pattern driver: apply patterns un
 
 ### 2.1 ConversionTarget: declaring what "legal" means
 
-The target classifies every operation the conversion encounters as *legal* (may remain), *illegal* (must be converted away), or *dynamically legal* (legal only if a predicate holds). From `Ch5/mlir/LowerToAffineLoops.cpp`:
+The target classifies every operation the conversion encounters as *legal* (may remain), *illegal* (must be converted away), or *dynamically legal* (legal only if a predicate holds).
+
+***mlir/LowerToAffineLoops.cpp***
 
 ```cpp
 ConversionTarget target(getContext());
@@ -109,6 +111,8 @@ Yes — **ordinary `RewritePattern`s can be used inside a dialect conversion**. 
 
 ### 2.3 applyPartialConversion vs applyFullConversion
 
+***mlir/LowerToAffineLoops.cpp***
+
 ```cpp
 if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))
   signalPassFailure();
@@ -127,6 +131,8 @@ Lowering `tensor` (value) to `memref` (buffer) while some consumers stay tensor-
 2. **Add a second variant of the op** that operates on memrefs (`toy.print_memref`). No hidden copies, but duplicates op definitions and is bad for progressive lowering.
 3. **Loosen the op's type constraints** so it accepts both. This is what the tutorial does — `PrintOp` in `Ch5/include/toy/Ops.td` declares:
 
+***include/toy/Ops.td***
+
 ```tablegen
 let arguments = (ins AnyTypeOf<[F64Tensor, F64MemRef]>:$input);
 ```
@@ -137,9 +143,11 @@ Option 3 keeps a single op, no copies, and the op simply "follows" the lowering 
 
 ## 3. Lowering the Ops
 
-Everything below is from [`Ch5/mlir/LowerToAffineLoops.cpp`](Ch5/mlir/LowerToAffineLoops.cpp) — read it top to bottom alongside this section.
+Everything below is from [`Ch5/mlir/LowerToAffineLoops.cpp`](mlir/LowerToAffineLoops.cpp) — read it top to bottom alongside this section.
 
 ### 3.1 Type conversion helper + `insertAllocAndDealloc`
+
+***mlir/LowerToAffineLoops.cpp***
 
 ```cpp
 /// Convert the given RankedTensorType into the corresponding MemRefType.
@@ -171,6 +179,8 @@ static Value insertAllocAndDealloc(MemRefType type, Location loc,
 ### 3.2 `lowerOpToLoops`: the shared loop-nest skeleton
 
 `toy.add`, `toy.mul`, and `toy.transpose` all lower to the same shape of code: *allocate result buffer → perfect loop nest over the result shape → compute one element per iteration → store it*. That skeleton is factored into a helper parameterized by a per-iteration callback:
+
+***mlir/LowerToAffineLoops.cpp***
 
 ```cpp
 /// Takes a builder, the remapped memref operands, and the loop induction
@@ -212,6 +222,8 @@ Key points:
 
 ### 3.3 `BinaryOpLowering` — Add and Mul in one template
 
+***mlir/LowerToAffineLoops.cpp***
+
 ```cpp
 template <typename BinaryOp, typename LoweredBinaryOp>
 struct BinaryOpLowering : public ConversionPattern {
@@ -249,6 +261,8 @@ using MulOpLowering = BinaryOpLowering<toy::MulOp, arith::MulFOp>;
 - Per iteration `[i][j]`: load lhs element, load rhs element, multiply/add, and (via `lowerOpToLoops`) store into the result buffer.
 
 ### 3.4 `ConstantOpLowering` — a constant becomes a buffer full of stores
+
+***mlir/LowerToAffineLoops.cpp***
 
 ```cpp
 struct ConstantOpLowering : public OpRewritePattern<toy::ConstantOp> {
@@ -313,6 +327,8 @@ For our 2x3 constant this produces 6 `arith.constant f64` ops + 6 `affine.store`
 
 ### 3.5 `TransposeOpLowering` — reversed induction variables
 
+***mlir/LowerToAffineLoops.cpp***
+
 ```cpp
 struct TransposeOpLowering : public ConversionPattern {
   TransposeOpLowering(MLIRContext *ctx)
@@ -350,6 +366,8 @@ affine.for %arg0 = 0 to 3 {
 ```
 
 ### 3.6 `FuncOpLowering` and `ReturnOpLowering` — the structural ops
+
+***mlir/LowerToAffineLoops.cpp***
 
 ```cpp
 struct FuncOpLowering : public OpConversionPattern<toy::FuncOp> {
@@ -400,6 +418,8 @@ struct ReturnOpLowering : public OpRewritePattern<toy::ReturnOp> {
 
 ### 3.7 `PrintOpLowering` — the op that *doesn't* get lowered
 
+***mlir/LowerToAffineLoops.cpp***
+
 ```cpp
 struct PrintOpLowering : public OpConversionPattern<toy::PrintOp> {
   using OpConversionPattern<toy::PrintOp>::OpConversionPattern;
@@ -429,6 +449,8 @@ Result in the output IR: `toy.print %alloc : memref<3x2xf64>` — a Toy op holdi
 ## 4. The Lowering Pass
 
 The pass wrapper at the bottom of `LowerToAffineLoops.cpp`:
+
+***mlir/LowerToAffineLoops.cpp***
 
 ```cpp
 namespace {
@@ -488,7 +510,9 @@ The factory `createLowerToAffinePass()` is declared in `Ch5/include/toy/Passes.h
 
 ## 5. The Pipeline in toyc.cpp
 
-[`Ch5/toyc.cpp`](Ch5/toyc.cpp) grows a new action this chapter:
+[`Ch5/toyc.cpp`](toyc.cpp) grows a new action this chapter:
+
+***toyc.cpp***
 
 ```cpp
 enum Action { None, DumpAST, DumpMLIR, DumpMLIRAffine };
@@ -550,77 +574,36 @@ Both dumps then come from the same `module->dump()` at the end — `-emit=mlir` 
 
 ## 6. Building
 
-All chapters now build through **one CMake superbuild** at `/Users/roy/study/mlir/toy` (the per-chapter `build.sh`/`run.sh` scripts are gone). The top-level [`CMakeLists.txt`](CMakeLists.txt) does the LLVM/MLIR boilerplate exactly once — `find_package(MLIR)`/`find_package(LLVM)`, `include(TableGen)`/`AddLLVM`/`AddMLIR`/`HandleLLVMOptions`, shared include dirs — then sets `CMAKE_RUNTIME_OUTPUT_DIRECTORY` to `build/bin` and pulls in `add_subdirectory(Ch1)` … `add_subdirectory(Ch7)`. The toolchain lives in [`CMakePresets.json`](CMakePresets.json): preset `default` = Ninja, Release, Homebrew LLVM/MLIR 20 (`CMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++`, `MLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir`, matching `LLVM_DIR`).
+The shared machinery (superbuild, presets, dual-mode guard, `build.sh`) is documented in the top-level [README, "The build system"](../README.md#the-build-system). Build this chapter with `cd toy && ./build.sh ch5` → `./build/bin/toyc-ch5`.
 
-Build this chapter:
+### 6.1 What Chapter 5 adds to the build: almost nothing
 
-```bash
-cd /Users/roy/study/mlir/toy
-./build.sh ch5          # configure once (cmake --preset default), then build only toyc-ch5
-# ./build.sh            # everything (ch1..ch7)
-# ./build.sh ch5 --fresh  # wipe build/ first; otherwise builds are INCREMENTAL
-```
+That is itself the lesson. Relative to Chapter 4, [`Ch5/CMakeLists.txt`](CMakeLists.txt) changes by exactly one line:
 
-Unlike the old per-chapter `build.sh` (which did `rm -rf build` every time), the superbuild `build.sh` configures only if `build/CMakeCache.txt` doesn't exist and lets Ninja rebuild incrementally. The binary lands at `/Users/roy/study/mlir/toy/build/bin/toyc-ch5` (all chapter binaries are collected in `build/bin/`, not `ChN/build/`).
-
-To make this work, each [`Ch5/CMakeLists.txt`](Ch5/CMakeLists.txt) is now **dual-mode**: the boilerplate (project, `find_package`, module includes) is wrapped in a guard that only fires when the chapter is configured directly, so it is skipped in the superbuild where the parent already did it:
-
-```cmake
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(toy-ch5)
-  find_package(MLIR REQUIRED CONFIG)
-  find_package(LLVM REQUIRED CONFIG)
-  # ... include(TableGen) / AddLLVM / AddMLIR / HandleLLVMOptions ...
-endif()
-```
-
-So standalone configuration is still possible:
-
-```bash
-cd /Users/roy/study/mlir/toy
-cmake -S Ch5 -B Ch5/build -G Ninja -DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir
-cmake --build Ch5/build   # binary at Ch5/build/toyc-ch5; run.sh falls back to it
-```
-
-Below the guard, the chapter targets are unchanged. [`Ch5/CMakeLists.txt`](Ch5/CMakeLists.txt) — the deltas vs Chapter 4:
+***CMakeLists.txt***
 
 ```cmake
 add_executable(toyc-ch5
-  toyc.cpp
-  parser/AST.cpp
-  mlir/MLIRGen.cpp
-  mlir/Dialect.cpp
+  ...
   mlir/LowerToAffineLoops.cpp   # <-- NEW this chapter
-  mlir/ShapeInferencePass.cpp
-  mlir/ToyCombine.cpp
+  ...
   )
-
-add_dependencies(toyc-ch5 ToyCh5ShapeInferenceInterfaceIncGen)
-add_dependencies(toyc-ch5 ToyCh5OpsIncGen)
-add_dependencies(toyc-ch5 ToyCh5CombineIncGen)
-
-target_link_libraries(toyc-ch5
-  PRIVATE
-    MLIR                         # libMLIR.dylib (all dialects, passes, conversions)
-    LLVM                         # libLLVM.dylib (core LLVM support)
-    )
 ```
 
-- We link against the **monolithic Homebrew dylibs** (`libMLIR.dylib` + `libLLVM.dylib`), so the new dialect dependencies come for free. If you were linking component libraries instead (as the in-tree tutorial does), this chapter is where you would add `MLIRAffineDialect`, `MLIRAffineTransforms` (for `LoopFusion` / `AffineScalarReplacement`), `MLIRArithDialect`, `MLIRMemRefDialect`, and `MLIRFuncDialect` on top of the Ch4 list.
-- Everything else (TableGen for ops, ShapeInference interface, and DRR combine rules) carries over unchanged from earlier chapters.
+Nothing else moves — no new TableGen, no new link libraries — because we link the **monolithic Homebrew dylibs** (`libMLIR.dylib` + `libLLVM.dylib`), which already contain the `affine`/`memref`/`arith`/`func` dialects, the dialect conversion framework, and the `LoopFusion`/`AffineScalarReplacement` passes this chapter starts using. If you were linking fine-grained component libraries instead (as the in-tree tutorial does), this chapter is where you would add `MLIRAffineDialect`, `MLIRAffineTransforms`, `MLIRArithDialect`, `MLIRMemRefDialect`, and `MLIRFuncDialect` on top of the Ch4 list — worth knowing if you ever build against a non-monolithic MLIR install.
 
 ---
 
 ## 7. Running and Testing
 
-The shared [`run.sh`](run.sh) at the repo root drives this chapter (it looks for the binary in `build/bin/` first, then falls back to a standalone `Ch5/build/`):
+The shared [`run.sh`](../run.sh) at the repo root drives this chapter (it looks for the binary in `build/bin/` first, then falls back to a standalone `Ch5/build/`):
 
 ```bash
-cd /Users/roy/study/mlir/toy
+cd toy
 ./run.sh ch5
 ```
 
-which exercises [`/Users/roy/study/mlir/test_Example/Toy/Ch5/affine-lowering.mlir`](../test_Example/Toy/Ch5/affine-lowering.mlir) three ways (equivalent direct invocations, run from `toy/`):
+which exercises [`test_Example/Toy/Ch5/affine-lowering.mlir`](../../test_Example/Toy/Ch5/affine-lowering.mlir) three ways (equivalent direct invocations, run from `toy/`):
 
 ```bash
 ./build/bin/toyc-ch5 ../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir -opt
@@ -631,6 +614,8 @@ which exercises [`/Users/roy/study/mlir/test_Example/Toy/Ch5/affine-lowering.mli
 ### 7.1 The input
 
 The test input is already Toy-dialect MLIR (note: `toyc-ch5` auto-detects `.mlir` input, no `-x mlir` needed). It also carries the `FileCheck` expectations used by the LIT-style `RUN:` lines at the top:
+
+***test_Example/Toy/Ch5/affine-lowering.mlir***
 
 ```mlir
 toy.func @main() {
@@ -645,6 +630,11 @@ toy.func @main() {
 i.e. `print(transpose(constant)²)` — one constant, one transpose, one element-wise multiply.
 
 ### 7.2 Run 1: `-emit=mlir -opt` — the Toy-level baseline (real output)
+
+```bash
+cd toy
+./build/bin/toyc-ch5 ../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir -opt 2>&1
+```
 
 ```mlir
 module {
@@ -661,6 +651,10 @@ module {
 Everything is still Toy. The Chapter-3 `transpose(transpose(x)) = x` pattern doesn't apply (there's only one transpose), so `-opt` at this level is essentially a no-op for this input. This is precisely the motivation for the chapter: **at the Toy level there is nothing left to optimize** — the redundancy we're about to expose (two loop nests, an intermediate buffer, double loads) doesn't even *exist* yet as a concept.
 
 ### 7.3 Run 2: `-emit=mlir-affine` — naive lowering, no `-opt` (real output)
+
+```bash
+./build/bin/toyc-ch5 ../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir-affine 2>&1
+```
 
 ```mlir
 module {
@@ -714,6 +708,10 @@ Annotations, mapping back to §3:
 The inefficiency is now *visible and expressible*: nest #1 writes 6 elements into `%alloc_5` only for nest #2 to immediately read them back once each. A whole buffer and a whole loop nest of memory traffic exist purely as glue.
 
 ### 7.4 Run 3: `-emit=mlir-affine -opt` — after LoopFusion + AffineScalarReplacement (real output)
+
+```bash
+./build/bin/toyc-ch5 ../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir-affine -opt 2>&1
+```
 
 ```mlir
 module {
@@ -789,6 +787,15 @@ None of this was expressible before lowering: it is the payoff for descending to
 
 The `RUN:` lines at the top of the test file encode runs 2 and 3 as FileCheck tests (`CHECK` prefix = naive lowering, `OPT` prefix = optimized), including exactly the 3-allocs-vs-2-allocs and two-nests-vs-one-nest structure explained above.
 
+**The ecosystem view: reproduce `-opt` with stock `mlir-opt`.** Takeaway 7 below says the two optimization passes know nothing about Toy — you can prove it. Print the naive lowering in *generic form* (so the one remaining `toy.print` becomes an opaque `"toy.print"(...)` that stock `mlir-opt` will tolerate — see Ch2 §7.6) and pipe it through the Homebrew `mlir-opt` with the same two passes `toyc-ch5 -opt` schedules:
+
+```bash
+./build/bin/toyc-ch5 ../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir-affine -mlir-print-op-generic 2>&1 \
+  | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect --affine-loop-fusion --affine-scalrep
+```
+
+Verified on this machine: the stock tool produces the same result as run 3 — one fused loop nest, two buffers, the intermediate `memref<3x2xf64>` gone — with `"toy.print"(%alloc)` passing through untouched as an unregistered op. This is the whole thesis of lowering into shared dialects, demonstrated with a binary that has never heard of Toy. (`--affine-loop-fusion` and `--affine-scalrep` are the registered names of `mlir::affine::createLoopFusionPass()` and `createAffineScalarReplacementPass()` from §5's pipeline.)
+
 ---
 
 ## 8. Key Takeaways & Pitfalls
@@ -819,6 +826,6 @@ The `RUN:` lines at the top of the test file encode runs 2 and 3 as FileCheck te
 
 - Official doc: [Toy Tutorial Ch.5 — Partial Lowering to Lower-Level Dialects for Optimization](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-5/)
 - Dialect conversion reference: [MLIR Dialect Conversion](https://mlir.llvm.org/docs/DialectConversion/)
-- Previous: [Chapter 4 — Enabling Generic Transformation with Interfaces](4_generic_transformation_interfaces.md)
-- Next: [Chapter 6 — Lowering to LLVM and CodeGen / JIT](6_lowering_to_llvm_jit.md)
-- Back to [README](README.md)
+- Previous: [Chapter 4 — Enabling Generic Transformation with Interfaces](../Ch4/README.md)
+- Next: [Chapter 6 — Lowering to LLVM and CodeGen / JIT](../Ch6/README.md)
+- Back to [README](../README.md)

@@ -10,6 +10,9 @@ cmake_minimum_required(VERSION 3.20)
 # Each ChN/ remains configurable as a standalone project as well; the
 # boilerplate below is then executed by the chapter itself (see the
 # CMAKE_SOURCE_DIR guard at the top of each ChN/CMakeLists.txt).
+#
+# The build machinery is documented in README.md ("The build system");
+# each ChN/CMakeLists.txt header states what that chapter adds.
 
 if(APPLE)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "macOS Deployment Target" FORCE)
