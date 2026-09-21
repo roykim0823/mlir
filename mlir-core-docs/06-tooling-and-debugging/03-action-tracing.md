@@ -241,7 +241,7 @@ The `ExecutionContext` is a component that provides facility to unify the kind
 of functionalities that most compiler debuggers tool would need, exposed in a
 composable way.
 
-![IMG](/actions/ActionTracing_ExecutionContext.png)
+![IMG](https://mlir.llvm.org/actions/ActionTracing_ExecutionContext.png)
 
 The `ExecutionContext` is itself registered as a handler with the MLIRContext
 and tracks all executed actions, keeping a per-thread stack of action execution.

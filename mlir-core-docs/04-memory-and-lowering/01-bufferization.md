@@ -41,7 +41,7 @@ many transformations are easier or only supported in tensor land; e.g.,
 [tile/fuse/… on tensors first](https://llvm.discourse.group/t/rfc-linalg-on-tensors-update-and-comprehensive-bufferization-rfc/3373),
 then bufferize the remaining IR.
 
-![bufferization passes](/includes/img/bufferization_passes.svg)
+![bufferization passes](https://mlir.llvm.org/includes/img/bufferization_passes.svg)
 
 The most important bufferization pass is *One-Shot Bufferize*: This pass
 rewrites `tensor` IR to `memref` IR. There are additional helper passes that
@@ -150,7 +150,7 @@ allocated for this "destination" input.
 As an example, consider the following op: `%r = tensor.insert %f into
 %t[%idx] : tensor<5xf32>`
 
-![tensor.insert example](/includes/img/bufferization_tensor_insert_dst.svg)
+![tensor.insert example](https://mlir.llvm.org/includes/img/bufferization_tensor_insert_dst.svg)
 
 `%t` is the "destination" in this example. When choosing a buffer for the result
 `%r`, denoted as `buffer(%r)`, One-Shot Bufferize considers only two options:

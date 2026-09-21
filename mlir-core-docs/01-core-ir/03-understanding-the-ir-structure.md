@@ -300,13 +300,13 @@ and can be exercised with `mlir-opt -test-print-defuse`.
 
 The chaining of `Value`s and their uses can be viewed as following:
 
-![Index Map Example](/includes/img/DefUseChains.svg)
+![Index Map Example](https://mlir.llvm.org/includes/img/DefUseChains.svg)
 
 The uses of a `Value` (`OpOperand` or `BlockOperand`) are also chained in a
 doubly linked-list, which is particularly useful when replacing all uses of a
 `Value` with a new one ("RAUW"):
 
-![Index Map Example](/includes/img/Use-list.svg)
+![Index Map Example](https://mlir.llvm.org/includes/img/Use-list.svg)
 
 ---
 

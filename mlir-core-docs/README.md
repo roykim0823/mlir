@@ -18,19 +18,21 @@ This collection re-sequences the same material along the axis that actually matt
 
 This edition covers the **core infrastructure** documentation: the IR itself, how to extend it, how to transform it, how to lower it, and the tooling around it. Dialect reference material and the two large tutorials are out of scope by request, which makes the remaining set unusually coherent — what is left is the framework, not the library built on top of it.
 
-### The nine sections
+### Contents
 
-| # | Section | Answers the question |
-|---|---------|----------------------|
-| 01 | Core IR | What *is* an MLIR program, structurally? |
-| 02 | Defining Dialects | How do I add my own operations, types and attributes? |
-| 03 | Passes and Rewriting | How do I transform the IR? |
-| 04 | Memory and Lowering | How do I get to buffers, and then out to LLVM? |
-| 05 | Data Representation | How do types, numbers and IR map onto bytes? |
-| 06 | Tooling and Debugging | Why is my pass doing that, and what tool tells me? |
-| 07 | Bindings and Embedding | How do I drive MLIR from C or Python? |
-| 08 | Rationale | Why is it designed this way? |
-| 09 | Appendix | Release notes, external material, and what was excluded. |
+| # | Section | Docs | Answers the question |
+|---|---------|------|----------------------|
+| 01 | [Core IR](01-core-ir/README.md) | 7 | What *is* an MLIR program, structurally? |
+| 02 | [Defining Dialects](02-defining-dialects/README.md) | 7 | How do I add my own operations, types and attributes? |
+| 03 | [Passes and Rewriting](03-passes-and-rewriting/README.md) | 8 | How do I transform the IR? |
+| 04 | [Memory and Lowering](04-memory-and-lowering/README.md) | 3 | How do I get to buffers, and then out to LLVM? |
+| 05 | [Data Representation](05-data-representation/README.md) | 3 | How do types, numbers and IR map onto bytes? |
+| 06 | [Tooling and Debugging](06-tooling-and-debugging/README.md) | 7 | Why is my pass doing that, and what tool tells me? |
+| 07 | [Bindings and Embedding](07-bindings-and-embedding/README.md) | 2 | How do I drive MLIR from C or Python? |
+| 08 | [Rationale and Design History](08-rationale/README.md) | 7 | Why is it designed this way? |
+| 09 | [Appendix](09-appendix/README.md) | 3 | Release notes, external material, and what was excluded. |
+
+Each section page lists its documents with a one-line description of what is in them.
 
 ### Ordering rules used
 
@@ -128,7 +130,8 @@ Most of the upstream documentation is written for someone who already holds a sp
 ### 1. There is no instruction set
 
 LLVM IR has a fixed, closed instruction set — `add`, `load`, `br` — defined by the LLVM project and
-extended only by patching LLVM. MLIR has exactly one thing, the **operation**, and everything else
+extended only by patching LLVM itself. Intrinsics and metadata leave some room, but a genuinely
+new operation means a change to LLVM. MLIR has exactly one thing, the **operation**, and everything else
 is an operation defined by some dialect. `arith.addi` has no more privileged status in the
 infrastructure than an operation you define this afternoon.
 
@@ -147,7 +150,7 @@ Operation
 ├── operands                Values it consumes
 ├── results                 Values it produces
 ├── attributes              compile-time constants (a dictionary)
-├── properties              inherent, non-uniqued storage for the above
+├── properties              inherent attributes, stored inline, not uniqued
 ├── successors              blocks it can branch to
 └── regions[]               ── Block[]  ── Operation[]  ── ...
 ```
@@ -165,18 +168,65 @@ structure, and why "raising" — recovering structure that was destroyed — is 
 ### 3. Multi-level means abstractions coexist
 
 "Multi-Level" in the name is not marketing. A single valid module can contain high-level tensor
-operations, structured loops, buffer accesses and LLVM intrinsics *simultaneously*, mid-pipeline.
-Lowering is therefore not one big translation step but a sequence of local, partial rewrites, and
-you can stop the pipeline at any point and print something meaningful.
+operations, structured loops, buffer accesses and raw pointer loads *simultaneously*, mid-pipeline.
+This function is not a contrived example — it is what the middle of a lowering pipeline looks like,
+and it parses and verifies:
+
+```mlir
+func.func @mixed(%t: tensor<8x8xf32>, %buf: memref<8xf32>, %p: !llvm.ptr)
+    -> tensor<8x8xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+
+  // tensor level: pure values, no storage, no aliasing
+  %0 = linalg.matmul ins(%t, %t : tensor<8x8xf32>, tensor<8x8xf32>)
+                     outs(%t : tensor<8x8xf32>) -> tensor<8x8xf32>
+
+  // loop level: explicit control flow over a buffer
+  scf.for %i = %c0 to %c8 step %c1 {
+    %v = memref.load %buf[%i] : memref<8xf32>
+    %w = arith.mulf %v, %v : f32
+    memref.store %w, %buf[%i] : memref<8xf32>
+  }
+
+  // machine level: a raw pointer load, in the same function
+  %x = llvm.load %p : !llvm.ptr -> f32
+  memref.store %x, %buf[%c0] : memref<8xf32>
+
+  return %0 : tensor<8x8xf32>
+}
+```
+
+Six dialects, three levels of abstraction, one function. Lowering is therefore not one big
+translation step but a sequence of local, partial rewrites, and you can stop the pipeline at any
+point and print something meaningful.
 
 Practical upshot: your lowering does not need to be complete to be useful. Partial conversion is
 the normal mode of operation, not a fallback.
 
 ### 4. Semantics live in traits and interfaces, not in the operation name
 
-A pass that hoists loop-invariant code does not contain a list of loop operations. It asks each
-operation whether it implements `LoopLikeOpInterface`. A pass that folds constants asks for
-`fold()`. A pass that reasons about aliasing asks for `MemoryEffectsOpInterface`.
+Because there is no fixed instruction set, a pass cannot switch on opcodes. A loop-invariant code
+motion pass written as `if (isa<scf::ForOp, affine::ForOp>(op))` would work on exactly the two loops
+its author had heard of, and would silently do nothing to the loop operation you define this
+afternoon.
+
+So passes ask questions instead of matching names, and an operation declares its answers in its
+definition:
+
+- **Traits** state facts, checked statically and for free. `Commutative` tells the canonicalizer it
+  may reorder operands; `Pure` tells dead-code elimination the operation can be deleted when its
+  results are unused.
+- **Interfaces** supply behaviour through virtual dispatch. `LoopLikeOpInterface` hands a caller the
+  loop body and the induction variable, so loop-invariant code motion hoists out of any operation
+  implementing it — including operations written years after the pass was. `MemoryEffectsOpInterface`
+  reports what an operation reads, writes, allocates or frees, which is what CSE and alias analysis
+  consult.
+
+Constant folding works the same way from the other side: the folder calls `Operation::fold`, which
+dispatches to the `fold()` hook ODS generated from your `.td` file. In none of these does the pass
+mention a dialect or an operation name.
 
 This is the single highest-leverage idea in MLIR, and it is why [Traits](01-core-ir/05-traits.md)
 and [Interfaces](01-core-ir/07-interfaces.md) come so early here despite sitting far down the
@@ -230,17 +280,17 @@ Terms the upstream documents use freely and define only in passing, or define in
 `getting_started/Glossary` page that most readers never open. Skim once; return when a page uses a
 word as though you already knew it.
 
+### Structure
+
+**Block** — a list of operations ending in a terminator, plus a list of block arguments. Block
+arguments replace phi nodes.
+
 **Operation** — the single unit of computation. Has a name, operands, results, attributes,
 properties, successors and regions. Everything is one, including modules and functions.
 
 **Op** — informal shorthand for an operation, and also the name of the C++ wrapper class
 (`arith::AddIOp`) giving typed accessors over a generic `Operation*`. Op classes are value-typed
 handles; passing one by value is idiomatic and cheap.
-
-**Value** — an SSA value, defined exactly once. Either an `OpResult` or a `BlockArgument`.
-
-**Block** — a list of operations ending in a terminator, plus a list of block arguments. Block
-arguments replace phi nodes.
 
 **Region** — an ordered list of blocks attached to an operation. Regions are how MLIR nests. A
 region with one block and no control flow is extremely common.
@@ -251,46 +301,63 @@ no terminator semantics, and use-before-def is permitted; this suits dataflow gr
 imported machine-learning model. The kind is declared by the enclosing operation via
 `RegionKindInterface`.
 
+**Symbol** — a named entity referenced by name rather than by SSA value, e.g. a function referenced
+as `@foo`. Lives in a symbol table.
+
 **Terminator** — the last operation in a block, transferring control. An operation is a terminator
 because it carries the `Terminator` trait.
 
+**Value** — an SSA value, defined exactly once. Either an `OpResult` or a `BlockArgument`.
+
+### Attributes and types
+
 **Attribute** — compile-time constant data attached to an operation, e.g. `{alignment = 8 : i64}`.
 Uniqued, immutable, typed. Distinct from operands, which are runtime values.
-
-**Property** — newer storage mechanism for an operation's inherent attributes: same information,
-stored inline in the operation instead of in the uniqued attribute dictionary, which is faster and
-allows non-attribute C++ types. You will see both spellings in real code.
 
 **Inherent vs discardable attribute** — inherent attributes are part of the operation's definition
 and are verified. Discardable attributes are extra annotations any pass may attach or drop, and are
 namespaced by dialect (`llvm.noalias`). Dropping a discardable attribute must never change
 semantics.
 
+**Property** — newer storage mechanism for an operation's inherent attributes: same information,
+stored inline in the operation instead of in the uniqued attribute dictionary, which is faster and
+allows non-attribute C++ types. Both mechanisms are in active use, and the ODS-generated accessors
+look the same either way — the difference shows up in the generic assembly format, where properties
+print inside `<{...}>`.
+
 **Type** — the type of a `Value`. Also uniqued and immutable. `i32`, `f16`, `tensor<4x8xf32>`,
 `memref<?xi8, 3>`, `!my_dialect.token`.
+
+### Dialects and declarations
 
 **Dialect** — a namespace grouping operations, types, attributes, and the interfaces and passes
 that go with them. The prefix before the dot: `arith.addi` belongs to the `arith` dialect.
 
-**Trait** — a compile-time property attached to an operation class, mixing in verification and
-behaviour: `Commutative`, `Terminator`, `SameOperandsAndResultType`, `Pure`. Cheap to check, no
-virtual dispatch.
-
 **Interface** — a virtual API an operation, type, attribute or dialect can implement, letting
 generic code call into it without knowing the concrete op: `LoopLikeOpInterface`,
-`MemoryEffectsOpInterface`. The mechanism that makes generic passes possible.
+`MemoryEffectsOpInterface`. The mechanism that makes generic passes possible. Note the naming trap:
+several interfaces have a TableGen name that differs from the C++ class you `dyn_cast` to —
+`MemoryEffectsOpInterface` in a `.td` file is `MemoryEffectOpInterface`, no `s`, in C++.
 
 **ODS** — Operation Definition Specification. The TableGen dialect used to declare operations in
 `.td` files, from which `mlir-tblgen` generates C++.
 
-**DRR** — Declarative Rewrite Rule. TableGen syntax for source-to-target pattern rewrites.
+**Trait** — a compile-time property attached to an operation class, mixing in verification and
+behaviour: `Commutative`, `Terminator`, `SameOperandsAndResultType`, `IsolatedFromAbove`. Checking
+one is a template test, with no virtual dispatch. `Pure` is written like a trait and usually called
+one, but it expands to `AlwaysSpeculatable` plus `NoMemoryEffect`, and that second half is answered
+through `MemoryEffectsOpInterface` — so it is not free to check.
 
-**PDL / PDLL** — Pattern Descriptor Language and its front-end language: an IR-based representation
-of rewrite patterns that can be interpreted at run time rather than compiled in.
+### Rewriting
 
 **Canonicalization** — the pass and pattern set that puts IR into a normal form so other passes have
 fewer shapes to match. Not "optimization"; a canonicalization must be unconditionally desirable and
 terminating.
+
+**Driver** — the loop that applies patterns. The greedy driver applies patterns to fixpoint; the
+conversion driver applies them with legality tracking and rollback.
+
+**DRR** — Declarative Rewrite Rule. TableGen syntax for source-to-target pattern rewrites.
 
 **Folding** — replacing an operation with an existing value or a constant attribute, in place,
 without creating new operations. `fold()` is cheaper and more restricted than a rewrite pattern.
@@ -299,11 +366,13 @@ without creating new operations. `fold()` is cheaper and more restricted than a 
 `ConversionTarget` declaring which operations are legal. Full conversion must eliminate all illegal
 ops; partial conversion may leave some.
 
+**PDL / PDLL** — Pattern Descriptor Language and its front-end language: an IR-based representation
+of rewrite patterns that can be interpreted at run time rather than compiled in.
+
 **Type converter** — the object mapping source types to target types during conversion, and
 materializing casts when a value crosses the boundary between converted and unconverted code.
 
-**Tensor vs memref** — a tensor is a pure value with no address; a memref is a reference to storage
-with a layout and a memory space. The distinction drives the whole bufferization phase.
+### Lowering and memory
 
 **Bufferization** — the phase replacing tensor values with memref buffers, allocating storage and
 deciding what can be written in place.
@@ -314,17 +383,21 @@ operand and returns the updated value, which is what makes in-place bufferizatio
 **Lowering** — rewriting from a higher-abstraction dialect to a lower one. Usually partial and
 composed of several passes, not a single translation.
 
+**Tensor vs memref** — a tensor is a pure value with no address; a memref is a reference to storage
+with a layout and a memory space. The distinction drives the whole bufferization phase.
+
 **Translation** — leaving MLIR entirely, e.g. emitting LLVM IR. Distinct from lowering: translation
 is a one-way export implemented outside the pass infrastructure.
 
-**Driver** — the loop that applies patterns. The greedy driver applies patterns to fixpoint; the
-conversion driver applies them with legality tracking and rollback.
+### Tooling
 
-**Symbol** — a named entity referenced by name rather than by SSA value, e.g. a function referenced
-as `@foo`. Lives in a symbol table.
+**Action** — a transformation of any granularity, wrapped so the framework can intercept it *before*
+it runs: observe it, log it, or skip it outright. "Execute this pass", "apply this canonicalization
+pattern" and "tile this loop" are all actions. The interception is what makes tracing and bisection
+possible.
 
-**Action** — a first-class representation of "something the compiler did", used for tracing,
-logging and bisection.
+**FileCheck / lit** — the LLVM test tooling. MLIR tests are `.mlir` files with `// RUN:` and
+`// CHECK:` lines; nearly all upstream examples are extracted from these tests.
 
 **`mlir-opt`** — the standard testing tool: read `.mlir`, run a pass pipeline, print `.mlir`. Your
 dialect gets its own equivalent binary.
@@ -332,124 +405,6 @@ dialect gets its own equivalent binary.
 **`mlir-tblgen`** — the generator turning `.td` declarations into C++ and documentation.
 
 **`mlir-translate`** — the tool for translation in and out of MLIR, e.g. `--mlir-to-llvmir`.
-
-**FileCheck / lit** — the LLVM test tooling. MLIR tests are `.mlir` files with `// RUN:` and
-`// CHECK:` lines; nearly all upstream examples are extracted from these tests.
-
----
-
-## Contents
-
-
-### 01 · [Core IR](01-core-ir/README.md)
-
-What an MLIR program *is*. The Language Reference sets the ground rules, the IR-structure walkthrough shows the C++ data structures behind them, and the rest of the section covers the mechanisms that carry meaning across dialect boundaries: symbols, traits and interfaces.
-
-| # | Document | |
-|---|---|---|
-| 1 | [MLIR Language Reference](01-core-ir/01-language-reference.md) | The definitive description of MLIR's structure, syntax, types and attributes. |
-| 2 | [Lexical Tokens](01-core-ir/02-lexical-tokens.md) | The token kinds shared by MLIR's parser and by custom assembly formats. |
-| 3 | [Understanding the IR Structure](01-core-ir/03-understanding-the-ir-structure.md) | Walking and inspecting the IR from C++ — the data structures behind the syntax. |
-| 4 | [Symbols and Symbol Tables](01-core-ir/04-symbols-and-symbol-tables.md) | Named, non-SSA references: how functions and globals are found by name. |
-| 5 | [Traits](01-core-ir/05-traits.md) | Compile-time operation properties, and the verification they bring with them. |
-| 6 | [The `Broadcastable` Trait](01-core-ir/06-trait-broadcastable.md) | Worked example of a non-trivial trait: NumPy-style shape broadcasting rules. |
-| 7 | [Interfaces](01-core-ir/07-interfaces.md) | The mechanism that lets generic transformations work on unknown dialects. |
-
-### 02 · [Defining Dialects](02-defining-dialects/README.md)
-
-How to extend MLIR with your own abstractions, in the order you will actually do the work: declare the dialect, declare its operations, declare its types and attributes, constrain them, give them readable syntax, wire the whole thing into a build. Shape inference closes the section because it is the first non-trivial thing most new dialects need.
-
-| # | Document | |
-|---|---|---|
-| 1 | [Defining Dialects](02-defining-dialects/01-defining-dialects.md) | Declaring a dialect: namespace, hooks, dependencies and registration. |
-| 2 | [Operation Definition Specification (ODS)](02-defining-dialects/02-operation-definition-specification.md) | The TableGen language for declaring operations. The core of dialect authoring. |
-| 3 | [Defining Dialect Attributes and Types](02-defining-dialects/03-defining-attributes-and-types.md) | Custom types and attributes: parameters, uniquing, storage, syntax. |
-| 4 | [Constraints](02-defining-dialects/04-constraints.md) | Predicates that restrict what operands, results and attributes may be. |
-| 5 | [Customizing Assembly Behavior](02-defining-dialects/05-customizing-assembly-behavior.md) | Declarative assembly formats, custom directives, aliases and name hints. |
-| 6 | [Creating a Dialect: Build Setup](02-defining-dialects/06-creating-a-dialect-build-setup.md) | CMake layout, TableGen invocation and directory conventions for a new dialect. |
-| 7 | [Shape Inference](02-defining-dialects/07-shape-inference.md) | Propagating shapes through the IR, and the design of the shape system. |
-
-### 03 · [Passes and Rewriting](03-passes-and-rewriting/README.md)
-
-How IR is transformed. The pass manager first, since it is the container everything runs in; then canonicalization and the pattern rewriter, which are the primitives; then the two declarative pattern languages and a worked end-to-end example; then dialect conversion, the driver used for lowering; and finally dataflow analysis, which is how passes learn things they cannot see locally.
-
-| # | Document | |
-|---|---|---|
-| 1 | [Pass Infrastructure](03-passes-and-rewriting/01-pass-infrastructure.md) | Writing passes, building pipelines, analyses, threading, instrumentation. |
-| 2 | [Operation Canonicalization](03-passes-and-rewriting/02-operation-canonicalization.md) | Normal forms: what belongs in canonicalization and what does not. |
-| 3 | [Pattern Rewriting: Generic DAG-to-DAG Rewriting](03-passes-and-rewriting/03-pattern-rewriting.md) | The core rewrite engine: patterns, benefits, rewriters and drivers. |
-| 4 | [Table-driven Declarative Rewrite Rules (DRR)](03-passes-and-rewriting/04-declarative-rewrite-rules-drr.md) | Writing source-to-target patterns in TableGen instead of C++. |
-| 5 | [PDLL — The PDL Language](03-passes-and-rewriting/05-pdll-pattern-language.md) | A dedicated language for rewrite patterns, with real editor tooling. |
-| 6 | [Quickstart: Adding a Graph Rewrite](03-passes-and-rewriting/06-quickstart-adding-a-rewrite.md) | End-to-end walkthrough of adding an operation and a pattern that rewrites it. |
-| 7 | [Dialect Conversion](03-passes-and-rewriting/07-dialect-conversion.md) | The legality-driven driver used for lowering between dialects. |
-| 8 | [Writing Dataflow Analyses](03-passes-and-rewriting/08-writing-dataflow-analyses.md) | The sparse and dense dataflow frameworks, and how to build an analysis on them. |
-
-### 04 · [Memory and Lowering](04-memory-and-lowering/README.md)
-
-Going down the stack. Bufferization crosses from pure values to storage, buffer deallocation makes that storage safe, and the LLVM IR target takes what remains out of MLIR entirely. These three are grouped because they are the phases where an optimizing pipeline stops being cheap to reason about and starts being about machines.
-
-| # | Document | |
-|---|---|---|
-| 1 | [Bufferization](04-memory-and-lowering/01-bufferization.md) | One-Shot Bufferize: turning tensor values into memref buffers. |
-| 2 | [Ownership-based Buffer Deallocation](04-memory-and-lowering/02-ownership-based-buffer-deallocation.md) | Inserting deallocations correctly, including across control flow. |
-| 3 | [LLVM IR Target](04-memory-and-lowering/03-llvm-ir-target.md) | Conversion to the LLVM dialect and translation to LLVM IR, including ABI details. |
-
-### 05 · [Data Representation](05-data-representation/README.md)
-
-Three documents about how abstract things become concrete bytes: how types map onto sizes and alignments, how real numbers are represented as integers, and how the IR itself is serialized. Independent of each other; read whichever applies.
-
-| # | Document | |
-|---|---|---|
-| 1 | [Data Layout Modeling](05-data-representation/01-data-layout-modeling.md) | Target-dependent sizes, alignments and address spaces, queried generically. |
-| 2 | [Quantization](05-data-representation/02-quantization.md) | Quantized types and the arithmetic they imply. |
-| 3 | [MLIR Bytecode Format](05-data-representation/03-bytecode-format.md) | The binary serialization format: layout, versioning and upgrade paths. |
-
-### 06 · [Tooling and Debugging](06-tooling-and-debugging/README.md)
-
-The tools you will spend most of your time in. `mlir-opt` first, because everything else is built around it, then the diagnostic and tracing infrastructure, then the standalone tools. Read at least the `mlir-opt` page early — it pays for itself immediately.
-
-| # | Document | |
-|---|---|---|
-| 1 | [Using `mlir-opt`](06-tooling-and-debugging/01-using-mlir-opt.md) | The central tool: running pipelines, testing, and the flags that matter. |
-| 2 | [Diagnostic Infrastructure](06-tooling-and-debugging/02-diagnostic-infrastructure.md) | Emitting errors and warnings, source locations, and testing diagnostics. |
-| 3 | [Action: Tracing and Debugging MLIR-based Compilers](06-tooling-and-debugging/03-action-tracing.md) | Observing and controlling compiler execution at a fine grain. |
-| 4 | [Remark Infrastructure](06-tooling-and-debugging/04-remark-infrastructure.md) | Structured optimization reports: what the compiler did and did not do. |
-| 5 | [MLIR Language Server Protocol](06-tooling-and-debugging/05-language-server-protocol.md) | Editor support for `.mlir`, `.pdll` and `.td` files. |
-| 6 | [`mlir-reduce`](06-tooling-and-debugging/06-mlir-reduce.md) | Automatic test-case reduction: shrink a failing input to something minimal. |
-| 7 | [`mlir-rewrite`](06-tooling-and-debugging/07-mlir-rewrite.md) | Source-to-source edits on `.mlir` files, preserving formatting. |
-
-### 07 · [Bindings and Embedding](07-bindings-and-embedding/README.md)
-
-Driving MLIR from outside C++. The C API is the stable foundation; the Python bindings are built on it and are what most people actually use. Read the C API page first even if you only intend to use Python — it explains the ownership model the Python layer inherits.
-
-| # | Document | |
-|---|---|---|
-| 1 | [MLIR C API](07-bindings-and-embedding/01-c-api.md) | The stable C interface: conventions, ownership, and extending it. |
-| 2 | [MLIR Python Bindings](07-bindings-and-embedding/02-python-bindings.md) | Building and using the Python API, and exposing your own dialect through it. |
-
-### 08 · [Rationale and Design History](08-rationale/README.md)
-
-Why MLIR is the way it is. These documents are arguments rather than references, and some record decisions since revised — which is why they are placed last. Reading them first is a reliable way to be confused by a design that no longer exists; reading them after the reference material is one of the fastest ways to develop judgement about the framework. The first document is an exception: it is still normative.
-
-| # | Document | |
-|---|---|---|
-| 1 | [Side Effects and Speculation](08-rationale/01-side-effects-and-speculation.md) | How to model effects correctly — still normative, not history. |
-| 2 | [MLIR Rationale](08-rationale/02-mlir-rationale.md) | The foundational design document: the arguments behind the core decisions. |
-| 3 | [Generic DAG Rewriter Infrastructure Rationale](08-rationale/03-generic-dag-rewriter-rationale.md) | Why the pattern rewriter looks the way it does, with reference to prior systems. |
-| 4 | [The Case for a Simplified Polyhedral Form](08-rationale/04-simplified-polyhedral-form.md) | Why MLIR embeds polyhedral concepts in the IR rather than using a separate representation. |
-| 5 | [Linalg Dialect Rationale: The Case For Compiler-Friendly Custom Operations](08-rationale/05-structured-ops-rationale.md) | Why operations should be designed to be transformed, not merely executed. |
-| 6 | [MLIR: Incremental Application to Graph Algorithms in ML Frameworks](08-rationale/06-mlir-for-graph-algorithms.md) | The case for adopting MLIR inside an existing framework, incrementally. |
-| 7 | [Usage of `const` in MLIR for Core IR Types](08-rationale/07-usage-of-const.md) | Why core IR types do not use `const`, and what to do instead. |
-
-### 09 · [Appendix](09-appendix/README.md)
-
-Release notes, external learning material, and an account of the upstream pages that were deliberately not mirrored here.
-
-| # | Document | |
-|---|---|---|
-| 1 | [MLIR Release Notes](09-appendix/01-release-notes.md) | Per-release changes; the first place to look when an upgrade breaks something. |
-| 2 | [External Tutorials and Learning Resources](09-appendix/02-external-tutorials.md) | Community-maintained tutorials and courses outside the main documentation. |
-| 3 | [Material Not Mirrored Here](09-appendix/03-excluded-material.md) | What was left out of this collection and where to find it. |
 
 ---
 

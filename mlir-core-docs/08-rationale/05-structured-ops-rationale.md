@@ -357,7 +357,7 @@ Comprehensions](https://dl.acm.org/doi/abs/10.1145/3355606), it has never been
 fully included into mainstream general-purpose optimization pipelines. Detailed
 analysis of the role of polyhedral transformations is provided in the
 [simplified polyhedral
-form](RationaleSimplifiedPolyhedralForm.md) document
+form](04-simplified-polyhedral-form.md) document
 dating back to the inception of MLIR.
 
 In particular, polyhedral abstractions have proved challenging to integrate with

@@ -80,7 +80,7 @@ but the exact feature set available will depend on your editor client.
 The language server actively runs verification on the IR as you type, showing
 any generated diagnostics in-place.
 
-![IMG](/mlir-lsp-server/diagnostics.png)
+![IMG](https://mlir.llvm.org/mlir-lsp-server/diagnostics.png)
 
 ##### Automatically insert `expected-` diagnostic checks
 
@@ -90,7 +90,7 @@ for checking expected diagnostics, which is heavily utilized when defining IR
 parsing and verification. The language server provides code actions for
 automatically inserting the checks for diagnostics it knows about.
 
-![IMG](/mlir-lsp-server/diagnostics_action.gif)
+![IMG](https://mlir.llvm.org/mlir-lsp-server/diagnostics_action.gif)
 
 #### Code completion
 
@@ -98,7 +98,7 @@ The language server provides suggestions as you type, offering completions for
 dialect constructs (such as attributes, operations, and types), block names, SSA
 value names, keywords, and more.
 
-![IMG](/mlir-lsp-server/code_complete.gif)
+![IMG](https://mlir.llvm.org/mlir-lsp-server/code_complete.gif)
 
 #### Cross-references
 
@@ -113,23 +113,23 @@ shown below:
 
 - SSA Values
 
-![SSA](/mlir-lsp-server/goto_def_ssa.gif)
+![SSA](https://mlir.llvm.org/mlir-lsp-server/goto_def_ssa.gif)
 
 - Symbol References
 
-![Symbols](/mlir-lsp-server/goto_def_symbol.gif)
+![Symbols](https://mlir.llvm.org/mlir-lsp-server/goto_def_symbol.gif)
 
 The definition of an operation will also take into account the source location
 attached, allowing for navigating into the source file that generated the
 operation.
 
-![External Locations](/mlir-lsp-server/goto_def_external.gif)
+![External Locations](https://mlir.llvm.org/mlir-lsp-server/goto_def_external.gif)
 
 ##### Find references
 
 Show all references of the IR entity under the cursor.
 
-![IMG](/mlir-lsp-server/find_references.gif)
+![IMG](https://mlir.llvm.org/mlir-lsp-server/find_references.gif)
 
 #### Hover
 
@@ -137,7 +137,7 @@ Hover over an IR entity to see more information about it. The exact information
 displayed is dependent on the type of IR entity under the cursor. For example,
 hovering over an `Operation` may show its generic format.
 
-![IMG](/mlir-lsp-server/hover.png)
+![IMG](https://mlir.llvm.org/mlir-lsp-server/hover.png)
 
 #### Navigation
 
@@ -145,7 +145,7 @@ The language server will also inform the editor about the structure of symbol
 tables within the IR. This allows for jumping directly to the definition of a
 symbol, such as a `func.func`, within the file.
 
-![IMG](/mlir-lsp-server/navigation.gif)
+![IMG](https://mlir.llvm.org/mlir-lsp-server/navigation.gif)
 
 #### Bytecode Editing and Inspection
 
@@ -153,7 +153,7 @@ The language server provides support for interacting with MLIR bytecode files,
 enabling IDEs to transparently view and edit bytecode files in the same way
 as textual `.mlir` files.
 
-![IMG](/mlir-lsp-server/bytecode_edit.gif)
+![IMG](https://mlir.llvm.org/mlir-lsp-server/bytecode_edit.gif)
 
 ## PDLL LSP Language Server : `mlir-pdll-lsp-server`
 
@@ -210,7 +210,7 @@ but the exact feature set available will depend on your editor client.
 The language server actively runs verification as you type, showing any
 generated diagnostics in-place.
 
-![IMG](/mlir-pdll-lsp-server/diagnostics.png)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/diagnostics.png)
 
 #### Code completion and signature help
 
@@ -219,7 +219,7 @@ rewrites, dialects, operations, etc are available in this context. The server
 also provides information about the structure of constraint and rewrite calls,
 operations, and more as you fill them in.
 
-![IMG](/mlir-pdll-lsp-server/code_complete.gif)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/code_complete.gif)
 
 #### Cross-references
 
@@ -229,37 +229,37 @@ Cross references allow for navigating the code base.
 
 Jump to the definition of a symbol under the cursor:
 
-![IMG](/mlir-pdll-lsp-server/goto_def.gif)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/goto_def.gif)
 
 If ODS information is available, we can also jump to the definition of operation
 names and more:
 
-![IMG](/mlir-pdll-lsp-server/goto_def_ods.gif)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/goto_def_ods.gif)
 
 ##### Find references
 
 Show all references of the symbol under the cursor.
 
-![IMG](/mlir-pdll-lsp-server/find_references.gif)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/find_references.gif)
 
 #### Hover
 
 Hover over a symbol to see more information about it, such as its type,
 documentation, and more.
 
-![IMG](/mlir-pdll-lsp-server/hover.png)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/hover.png)
 
 If ODS information is available, we can also show information directly from the
 operation definitions:
 
-![IMG](/mlir-pdll-lsp-server/hover_ods.png)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/hover_ods.png)
 
 #### Navigation
 
 The language server will also inform the editor about the structure of symbols
 within the IR.
 
-![IMG](/mlir-pdll-lsp-server/navigation.gif)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/navigation.gif)
 
 #### View intermediate output
 
@@ -268,7 +268,7 @@ stages of compilation, such as the AST, the `.mlir` containing the generated
 PDL, and the generated C++ glue. This is a custom LSP extension, and is not
 necessarily provided by all IDE clients.
 
-![IMG](/mlir-pdll-lsp-server/view_output.gif)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/view_output.gif)
 
 #### Inlay hints
 
@@ -280,7 +280,7 @@ with code. Hints may be shown for:
 - names of operand and result groups
 - constraint and rewrite arguments
 
-![IMG](/mlir-pdll-lsp-server/inlay_hints.png)
+![IMG](https://mlir.llvm.org/mlir-pdll-lsp-server/inlay_hints.png)
 
 ## TableGen LSP Language Server : `tblgen-lsp-server`
 
@@ -336,7 +336,7 @@ but the exact feature set available will depend on your editor client.
 The language server actively runs verification as you type, showing any
 generated diagnostics in-place.
 
-![IMG](/tblgen-lsp-server/diagnostics.png)
+![IMG](https://mlir.llvm.org/tblgen-lsp-server/diagnostics.png)
 
 #### Cross-references
 
@@ -346,25 +346,25 @@ Cross references allow for navigating the code base.
 
 Jump to the definition of a symbol under the cursor:
 
-![IMG](/tblgen-lsp-server/goto_def.gif)
+![IMG](https://mlir.llvm.org/tblgen-lsp-server/goto_def.gif)
 
 ##### Find references
 
 Show all references of the symbol under the cursor.
 
-![IMG](/tblgen-lsp-server/find_references.gif)
+![IMG](https://mlir.llvm.org/tblgen-lsp-server/find_references.gif)
 
 #### Hover
 
 Hover over a symbol to see more information about it, such as its type,
 documentation, and more.
 
-![IMG](/tblgen-lsp-server/hover_def.png)
+![IMG](https://mlir.llvm.org/tblgen-lsp-server/hover_def.png)
 
 Hovering over an overridden field will also show you information such as
 documentation from the base value:
 
-![IMG](/tblgen-lsp-server/hover_field.png)
+![IMG](https://mlir.llvm.org/tblgen-lsp-server/hover_field.png)
 
 ## Language Server Design
 
@@ -375,7 +375,7 @@ same, and are largely comprised of three different components:
 - Language Server Protocol
 - Language-Specific Server
 
-![Index Map Example](/includes/img/mlir-lsp-server-server_diagram.svg)
+![Index Map Example](https://mlir.llvm.org/includes/img/mlir-lsp-server-server_diagram.svg)
 
 ### Communication and Transport
 

@@ -49,7 +49,7 @@ FooOpsInterfaces.h.inc.
 
 The 'Transforms' directory contains rewrite rules for the dialect,
 typically described in TableGen file using the [DRR
-format](../DeclarativeRewrites.md).
+format](../03-passes-and-rewriting/04-declarative-rewrite-rules-drr.md).
 
 Note that dialect names should not generally be suffixed with “Ops”,
 although some files pertaining only to the operations of a dialect (e.g.

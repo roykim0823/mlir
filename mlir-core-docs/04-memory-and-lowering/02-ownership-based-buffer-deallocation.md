@@ -109,7 +109,7 @@ the ownership-based buffer deallocation pass. `bufferization.dealloc`
 deallocates all given buffers if the respective ownership indicator is set and
 there is no aliasing buffer in the retain list.
 
-![branch_example_pre_move](/includes/img/bufferization_dealloc_op.svg)
+![branch_example_pre_move](https://mlir.llvm.org/includes/img/bufferization_dealloc_op.svg)
 
 `bufferization.dealloc` operations are unconditionally inserted at the end of
 each basic block (just before the terminator). The majority of the pass is about
