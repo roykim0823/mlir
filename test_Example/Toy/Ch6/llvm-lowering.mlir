@@ -20,4 +20,4 @@ toy.func @main() {
 // CHECK: @printf
 // CHECK-SAME: 9.000000e+00
 // CHECK: @printf
-// CHECK-SAME: 3.000000e+01
+// CHECK-SAME: 3.600000e+01

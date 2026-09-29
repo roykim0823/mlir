@@ -104,14 +104,20 @@ binaries from `build/bin/`. You can of course also run a binary directly:
 ```
 
 To build one chapter standalone (e.g. to experiment without touching the
-rest), configure it directly and pass the MLIR/LLVM locations:
+rest), configure it directly:
 
 ```bash
-cmake -S Ch3 -B Ch3/build -G Ninja \
-  -DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir \
-  -DLLVM_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/llvm
+cmake -S Ch3 -B Ch3/build -G Ninja
 cmake --build Ch3/build
 ```
+
+No preset applies at the chapter level, but no flags are needed as long as the
+shell points at Homebrew LLVM 20: `CXX=/opt/homebrew/opt/llvm@20/bin/clang++`
+(and `CC`) selects the compiler, and with `/opt/homebrew/opt/llvm@20/bin` on
+`PATH`, `find_package` also searches the prefix above each `PATH` entry and
+finds `llvm@20/lib/cmake/{mlir,llvm}` by itself. Without that environment,
+pass the locations explicitly:
+`-DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir -DLLVM_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/llvm -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++`.
 
 ## The build system
 
