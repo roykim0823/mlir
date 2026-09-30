@@ -88,11 +88,7 @@ Tools don't *print* locations by default (locations are always stored); `-mlir-p
 
 ### 2.3 Dialects, operations and locations in real output
 
-Three runs of `toyc-ch2` make the concepts above concrete. Each shows the code that produces the output, the exact command, and the real output. The build is in section 6.1.
-
-#### Several dialects in one module, every op with a location
-
-The input is this repo's `codegen.toy` (section 6.3 shows it whole):
+One run of `toyc-ch2` makes the concepts above concrete: several dialects in one module, section 2.2's op anatomy on real ops, and a location on everything. The code producing this behavior is walked through in sections 3 and 5; the build is in section 6.1. The input is this repo's `codegen.toy` (section 6.3 shows it whole):
 
 ***codegen.toy***
 ```text
@@ -100,25 +96,10 @@ The input is this repo's `codegen.toy` (section 6.3 shows it whole):
 def multiply_transpose(a, b) {
   return transpose(a) * transpose(b);
 }
+...
 ```
 
-MLIRGen creates the outer module op (with no source location) and converts every Toy AST location into an MLIR `FileLineColLoc` (section 5.1):
-
-***mlir/MLIRGen.cpp***
-```cpp
-mlir::ModuleOp mlirGen(ModuleAST &moduleAST) {
-  // We create an empty MLIR module and codegen functions one at a time and
-  // add them to the module.
-  theModule = mlir::ModuleOp::create(builder.getUnknownLoc());
-  ...
-/// Helper conversion for a Toy AST location to an MLIR location.
-mlir::Location loc(const Location &loc) {
-  return mlir::FileLineColLoc::get(builder.getStringAttr(*loc.file), loc.line,
-                                   loc.col);
-}
-```
-
-Print the result in generic form, with locations:
+MLIRGen (section 5) turns the Toy AST into MLIR. Two of its choices matter for the output below: it creates the outer module op with `builder.getUnknownLoc()` — the explicit "no location" choice — and it converts every Toy AST location into an MLIR `FileLineColLoc`; section 5.1 shows the code. Print the result in generic form, with locations:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch2
@@ -138,86 +119,21 @@ Real output (abridged; section 4.5 shows all of it):
 ```
 
 - **Two dialects in one module**: the outermost op is `builtin.module` from the `builtin` dialect; it holds `toy.func` and `toy.transpose` ops from our dialect. Without `-mlir-print-op-generic` the same module prints as `module { toy.func @multiply_transpose(...) ... }` — the `builtin.` prefix is elided (section 6.4).
-- **The anatomy of section 2.2**, on real ops: `%6` is the result, `"toy.transpose"` the name, `(%arg0)` the operand, `(tensor<*xf64>) -> tensor<*xf64>` the functional type. `toy.func` also shows *properties* in `<Ellipsis>` and a region `(Ellipsis)` whose entry block `^bb0` has two block arguments.
-- **Locations everywhere**: `loc("codegen.toy":3:10)` is line 3, column 10 of the input — the `transpose(a)` call. Block arguments carry locations too. The module's `loc(unknown)` comes from `builder.getUnknownLoc()` above — the explicit "no location" choice.
+- **The anatomy of section 2.2**, on real ops: `%6` is the result, `"toy.transpose"` the name, `(%arg0)` the operand, `(tensor<*xf64>) -> tensor<*xf64>` the functional type. `toy.func` also shows *properties* in `<{...}>` and a region `({...})` whose entry block `^bb0` has two block arguments.
+- **Locations everywhere**: `loc("codegen.toy":3:10)` is line 3, column 10 of the input — the `transpose(a)` call. Block arguments carry locations too. The module's `loc(unknown)` is the `getUnknownLoc()` mentioned above (section 5.1).
 
-#### A tool only understands the dialects it has loaded
-
-`toyc-ch2` loads the `toy` dialect into its context before doing anything else (section 3.3):
-
-***toyc.cpp***
-```cpp
-mlir::MLIRContext context;
-// Load our Dialect in this MLIR Context.
-context.getOrLoadDialect<mlir::toy::ToyDialect>();
-```
-
-Stock `mlir-opt` has no such line for `toy`, so it cannot parse our (custom-syntax) output:
-
-```bash
-cd /Users/roy/study/mlir/toy/Ch2
-./build/toyc-ch2 codegen.toy -emit=mlir 2>&1 | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
-```
-
-Real output:
-
-```text
-<stdin>:2:3: error: Dialect `toy' not found for custom op 'toy.func'
-  toy.func @multiply_transpose(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>) -> tensor<*xf64> {
-  ^
-```
-
-`-allow-unregistered-dialect` doesn't help: it only covers the generic form, which `mlir-opt` can read without knowing the dialect (section 2.4, and section 6.7 for the generic-form round trip).
-
-#### A registered dialect verifies its ops
-
-The test input breaks three rules of `toy.print`:
-
-***test_Example/Toy/Ch2/invalid.mlir***
-```mlir
-// RUN: not toyc-ch2 %s -emit=mlir 2>&1
-
-// The following IR is not "valid":
-// - toy.print should not return a value.
-// - toy.print should take an argument.
-// - There should be a block terminator.
-toy.func @main() {
-  %0 = "toy.print"()  : () -> tensor<2x3xf64>
-}
-```
-
-`PrintOp` declares no results in `Ops.td` (section 4.10), so ODS gives the generated class the `ZeroResults` trait, whose verifier rejects any result:
-
-***build/op-decls.inc***
-```cpp
-class PrintOp : public ::mlir::Op<PrintOp, ::mlir::OpTrait::ZeroRegions, ::mlir::OpTrait::ZeroResults, ::mlir::OpTrait::ZeroSuccessors, ::mlir::OpTrait::OneOperand, ::mlir::OpTrait::OpInvariants> {
-```
-
-```bash
-cd /Users/roy/study/mlir/toy/Ch2
-./build/toyc-ch2 ../../test_Example/Toy/Ch2/invalid.mlir -emit=mlir
-```
-
-Real output (exit status 3):
-
-```text
-loc("../../test_Example/Toy/Ch2/invalid.mlir":8:8): error: 'toy.print' op requires zero results
-Error can't load file ../../test_Example/Toy/Ch2/invalid.mlir
-```
-
-The diagnostic carries the location of the offending op (line 8, column 8). Verification stops at the first failure, so the other two problems are not reported. Section 2.4 feeds the same IR, with `func.func` instead of `toy.func`, to `mlir-opt`, which accepts it because `toy` is not registered there.
+Two follow-up experiments with this module are shown where their context lives: a tool only understands the dialects it has **loaded** — `toyc-ch2` loads `toy` into its `MLIRContext` (section 3.3), while stock `mlir-opt` doesn't and cannot even parse this output (section 6.7) — and a **registered** dialect *verifies* its ops, rejecting invalid IR with a precise diagnostic (section 2.4).
 
 ### 2.4 The opaque API: MLIR works even on ops it has never heard of
 
-MLIR lets every IR element — attributes, operations, types — be customized, yet any of them can always be reduced to the fundamental concepts of section 2.2. That is what lets MLIR parse, represent, and [round-trip](https://mlir.llvm.org/getting_started/Glossary/#round-trip) IR for *any* operation, even one from a dialect nobody registered. Two runs of the stock Homebrew `mlir-opt`, which knows nothing about `toy`, show this.
+MLIR lets every IR element — attributes, operations, types — be customized, yet any of them can always be reduced to the fundamental concepts of section 2.2. That is what lets MLIR parse, represent, and [round-trip](https://mlir.llvm.org/getting_started/Glossary/#round-trip) IR for *any* operation, even one from a dialect nobody registered. The stock Homebrew `mlir-opt`, which knows nothing about `toy`, shows this below — with `toyc-ch2`, which registers `toy`, as the closing contrast.
 
 #### An unregistered op round-trips
 
 The input is the upstream tutorial's example, not a file in this repo, so the commands pass it on stdin: the `toy.transpose` from section 2.2 inside a `func.func`. By default `mlir-opt` refuses unregistered dialects:
 
 ```bash
-cd /Users/roy/study/mlir/toy/Ch2
-/opt/homebrew/opt/llvm@20/bin/mlir-opt <<'EOF'
+mlir-opt <<'EOF'
 func.func @toy_func(%tensor: tensor<2x3xf64>) -> tensor<3x2xf64> {
   %t_tensor = "toy.transpose"(%tensor) { inplace = true } : (tensor<2x3xf64>) -> tensor<3x2xf64>
   return %t_tensor : tensor<3x2xf64>
@@ -236,8 +152,7 @@ Real output (exit status 1):
 With `-allow-unregistered-dialect`, it parses and prints the IR back:
 
 ```bash
-cd /Users/roy/study/mlir/toy/Ch2
-/opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect <<'EOF'
+mlir-opt -allow-unregistered-dialect <<'EOF'
 func.func @toy_func(%tensor: tensor<2x3xf64>) -> tensor<3x2xf64> {
   %t_tensor = "toy.transpose"(%tensor) { inplace = true } : (tensor<2x3xf64>) -> tensor<3x2xf64>
   return %t_tensor : tensor<3x2xf64>
@@ -260,12 +175,28 @@ Note that `%tensor`/`%t_tensor` came back as `%arg0`/`%0` — the value names we
 
 For unregistered attributes, operations, and types, MLIR only enforces *structural* constraints (e.g. dominance); otherwise they are completely **opaque**. MLIR has no idea whether an unregistered op can operate on particular data types, how many operands it takes, or how many results it produces. That flexibility is handy for bootstrapping, but advised against in mature systems: transformations and analyses must treat unregistered ops conservatively, and they are much harder to construct and manipulate.
 
+**What the flag does — and does not — buy.** `-allow-unregistered-dialect` lifts a *policy* check at op-creation time: by default the parser refuses to materialize an op from a dialect that isn't loaded, and the flag says "build it anyway, opaquely" — that is the `operation being parsed with an unregistered dialect` error above. It does nothing for *parsing text*. That works here only because the generic form is self-describing — quoted op name, explicit operand list, attribute dictionary, functional type — so MLIR's built-in parser reads it with no dialect-specific code. Toy's *custom* assembly (section 2.3's module without `-mlir-print-op-generic`) is different: reading `toy.func @multiply_transpose(...)` back needs the toy dialect's own `parse()` methods, which stock `mlir-opt` doesn't contain, so it fails with ``Dialect `toy' not found for custom op`` — flag or no flag. Section 6.7 demonstrates exactly this contrast on this repo's real module.
+
 #### Invalid IR passes when the dialect is unregistered
 
-The test input `test_Example/Toy/Ch2/invalid.mlir` (shown in section 2.3) holds IR that is *invalid* for Toy. Section 2.3 feeds it to `toyc-ch2`, which rejects it. Here the same IR goes to stock `mlir-opt`, with `toy.func` swapped for the builtin `func.func` so that only the `toy.print` op is unregistered:
+This repo's negative test input holds IR that is *invalid* for Toy — it breaks three rules of `toy.print`:
+
+***test_Example/Toy/Ch2/invalid.mlir***
+```mlir
+// RUN: not toyc-ch2 %s -emit=mlir 2>&1
+
+// The following IR is not "valid":
+// - toy.print should not return a value.
+// - toy.print should take an argument.
+// - There should be a block terminator.
+toy.func @main() {
+  %0 = "toy.print"()  : () -> tensor<2x3xf64>
+}
+```
+
+Fed to stock `mlir-opt` — with `toy.func` swapped for the builtin `func.func` so that only the `toy.print` op is unregistered — it passes untouched:
 
 ```bash
-cd /Users/roy/study/mlir/toy/Ch2
 sed 's/toy\.func/func.func/' ../../test_Example/Toy/Ch2/invalid.mlir \
   | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
 ```
@@ -286,7 +217,22 @@ There are three problems here, none of which MLIR can see:
 2. `toy.print` should take an operand.
 3. `toy.print` shouldn't return any values.
 
-**Registering** the dialect and its operations fixes all of that: the verifier learns each op's invariants (the same IR as a `toy.func` is rejected with `'toy.print' op requires zero results` — section 2.3), and you get typed accessor methods instead of stringly-typed attribute lookups, a custom (pretty) assembly syntax, and hooks for optimization. That is what the rest of this chapter builds.
+`toyc-ch2`, which registers the `toy` dialect, *can* see them. Give it the file unmodified, in its `toy.func` form:
+
+```bash
+./build/toyc-ch2 ../../test_Example/Toy/Ch2/invalid.mlir -emit=mlir
+```
+
+Real output (exit status 3):
+
+```text
+loc("../../test_Example/Toy/Ch2/invalid.mlir":8:8): error: 'toy.print' op requires zero results
+Error can't load file ../../test_Example/Toy/Ch2/invalid.mlir
+```
+
+The verifier knows `toy.print`'s invariants from its ODS definition (section 4.10), the diagnostic carries the offending op's location (line 8, column 8), and verification stops at the first failure — the other two problems go unreported until this one is fixed.
+
+**Registering** the dialect and its operations is what makes the difference: the verifier learns each op's invariants, and you get typed accessor methods instead of stringly-typed attribute lookups, a custom (pretty) assembly syntax, and hooks for optimization. That is what the rest of this chapter builds.
 
 ---
 
@@ -447,7 +393,7 @@ The upstream text writes `context.loadDialect<ToyDialect>()`; the two are interc
 
 ## 4. Defining Toy Operations with ODS
 
-With a dialect in place we can define operations, which is how we give the rest of the system semantic information to hook into. This section follows the upstream tutorial's path with one op, `toy.constant`: first written by hand in C++ (4.1–4.2), then declaratively with ODS, one feature at a time (4.3–4.4), then with a custom assembly format (4.5). After that, 4.6 gives all nine ops at a glance, and 4.7–4.13 cover the remaining eight one by one.
+With a dialect in place we can define operations, which is how we give the rest of the system semantic information to hook into. This section follows the upstream tutorial's path with one op, `toy.constant`: first written by hand in C++, then declaratively with ODS, one feature at a time, then with a custom assembly format. After that, 4.6 gives all nine ops at a glance, and 4.7–4.13 cover the remaining eight one by one.
 
 ### 4.1 The C++ way: a hand-written `ConstantOp`
 
@@ -1840,7 +1786,7 @@ cd /Users/roy/study/mlir/toy/Ch2
 ./build/toyc-ch2 ../../test_Example/Toy/Ch2/invalid.mlir -emit=mlir  # exercises parser diagnostics
 ```
 
-`invalid.mlir` is the negative test: it contains malformed Toy IR, and the point is to watch the *registered* dialect reject it with a precise diagnostic instead of accepting it opaquely (contrast with section 2.4).
+`invalid.mlir` is the negative test: it contains malformed Toy IR, and the point is to watch the *registered* dialect reject it with a precise diagnostic instead of accepting it opaquely (section 2.4 shows both sides of that contrast).
 
 ### 6.7 The ecosystem view: feeding Toy IR to stock `mlir-opt`
 
