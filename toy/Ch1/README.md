@@ -17,7 +17,7 @@ Nothing in this chapter touches MLIR APIs yet — the AST is plain C++ classes. 
 
 ### Where Chapter 1 lives in this repo
 
-How this repo is organized — the out-of-tree CMake superbuild at `toy/` (unlike the upstream code, which lives inside `llvm-project/mlir/examples/toy/`), the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers — is documented once in the top-level [README](../README.md#repository-layout) ("How this repo differs from upstream llvm-project" and "Repository layout"). This chapter also remains configurable as a standalone project (see section 3.1). Chapter 1 specifics:
+How this repo is organized — the out-of-tree CMake superbuild at `toy/`, the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers — is documented once in the top-level [README](../README.md#repository-layout). This chapter also remains configurable as a standalone project (see section 3.1). Chapter 1 specifics:
 
 | Item | Location / value |
 |---|---|
@@ -42,6 +42,8 @@ Ch1/
 
 Note that the lexer, parser, and AST are all header-only; the only two translation units are `toyc.cpp` and `parser/AST.cpp`.
 
+Two appendices hold the extras: what Chapter 1 adds to the build (A), and the script that runs every command in this README (B).
+
 ## 2. The Toy Language
 
 Toy is a **tensor-based** language: you can define functions, do some math, and print results. It is intentionally minimal so that the interesting work happens in the compiler, not the language:
@@ -55,9 +57,11 @@ Toy is a **tensor-based** language: you can define functions, do some math, and 
 
 ### A first example
 
-Here is the introductory program from the official docs:
+An introductory program (not this repo's code), fed to `toyc-ch1` on stdin to show its AST right away (section 3.2 explains the driver):
 
-```text
+```bash
+cd /Users/roy/study/mlir/toy/Ch1
+./build/toyc-ch1 -emit=ast <<'EOF'
 def main() {
   # Define a variable `a` with shape <2, 3>, initialized with the literal value.
   # The shape is inferred from the supplied literal.
@@ -71,6 +75,31 @@ def main() {
   # a and b and perform an element-wise multiplication before printing the result.
   print(transpose(a) * transpose(b));
 }
+EOF
+```
+
+Real output **[1]**:
+
+```text
+  Module:
+    Function 
+      Proto 'main' @-:1:1
+      Params: []
+      Block {
+        VarDecl a<> @-:4:3
+          Literal: <2, 3>[ <3>[ 1.000000e+00, 2.000000e+00, 3.000000e+00], <3>[ 4.000000e+00, 5.000000e+00, 6.000000e+00]] @-:4:11
+        VarDecl b<2, 3> @-:8:3
+          Literal: <6>[ 1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00, 5.000000e+00, 6.000000e+00] @-:8:17
+        Print [ @-:12:3
+          BinOp: * @-:12:24
+            Call 'transpose' [ @-:12:9
+              var: a @-:12:19
+            ]
+            Call 'transpose' [ @-:12:24
+              var: b @-:12:34
+            ]
+        ]
+      } // Block
 ```
 
 Things to notice:
@@ -78,13 +107,16 @@ Things to notice:
 - `var a = [[1, 2, 3], [4, 5, 6]];` — the shape `<2, 3>` is **inferred** from the nesting structure of the literal.
 - `var b<2, 3> = [1, 2, 3, 4, 5, 6];` — an explicit shape on the declaration **implicitly reshapes** a flat 6-element literal into a 2×3 tensor. Declaring a new variable is the *only* way to reshape in Toy; the element count of the literal must match the declared shape.
 - `*` is **element-wise** multiplication, not matrix multiplication.
+- In the dump, `print(...)` is its own `Print` node, while `transpose` is an ordinary `Call`; the `@-:line:col` locations name stdin as `-` (section 3.4 reads a dump line by line).
 
 ### Generic functions and shape specialization
 
-Type checking in Toy is done statically through **type inference**: the language barely requires type declarations. Functions are **generic over shapes** — a function's parameters are *unranked* (we know the values are tensors, but not their dimensions). Concrete shapes are only pinned down when the function is called; conceptually, the compiler **specializes** a function for each distinct set of argument shapes it is called with. This is the second example from the docs, and it is exactly the content of this repo's test file:
+Type checking in Toy is done statically through **type inference**: the language barely requires type declarations. Functions are **generic over shapes** — a function's parameters are *unranked* (we know the values are tensors, but not their dimensions). Concrete shapes are only pinned down when the function is called; conceptually, the compiler **specializes** a function for each distinct set of argument shapes it is called with. This repo's test file `ast.toy` shows it (abridged: the `# CHECK:` lines after the program are elided):
 
 ***test_Example/Toy/Ch1/ast.toy***
-```mlir
+```text
+# RUN: toyc-ch1 %s -emit=ast 2>&1 | FileCheck %s
+
 # User defined generic function that operates on unknown shaped arguments.
 def multiply_transpose(a, b) {
   return transpose(a) * transpose(b);
@@ -115,6 +147,7 @@ def main() {
   # (<2, 3> and <3, 2>) will trigger a shape inference error.
   var f = multiply_transpose(a, c);
 }
+...
 ```
 
 The comments spell out the intended future semantics:
@@ -124,7 +157,7 @@ The comments spell out the intended future semantics:
 - `multiply_transpose(c, d)` with two `<3, 2>` arguments would trigger a *new* specialization.
 - `multiply_transpose(a, c)` mixes `<2, 3>` and `<3, 2>` — element-wise `*` requires matching shapes, so shape inference would report an **error**.
 
-Important caveat for this chapter: **none of that is checked yet**. Chapter 1's parser performs *no semantic analysis at all* — no symbol resolution, no shape checking, not even a check that called functions exist. All of the shape-inference behavior described above is implemented in later chapters (shape inference is Chapter 4). Here, even the "incompatible" call in `var f = ...` parses without complaint, as you will see in the actual AST dump in section 3.3. (The file also carries `# RUN:` / `# CHECK:` comment lines used by LLVM's `lit`/`FileCheck` in upstream testing; to the Toy lexer they are simply comments.)
+Important caveat for this chapter: **none of that is checked yet**. Chapter 1's parser performs *no semantic analysis at all* — no symbol resolution, no shape checking, not even a check that called functions exist. All of the shape-inference behavior described above is implemented in later chapters (shape inference is Chapter 4). Here, even the "incompatible" call in `var f = ...` parses without complaint, as you will see in the actual AST dump in section 3.3. (The file's `# RUN:` and `# CHECK:` lines drive LLVM's `lit`/`FileCheck` testing; to the Toy lexer they are simply comments, but they count as lines, which is why the first `def` is on line 4.)
 
 The second test input, `test_Example/Toy/Ch1/empty.toy`, is a negative test — it contains only comments (no `def`), and expects the compiler to emit a parse error rather than crash:
 
@@ -139,6 +172,8 @@ The second test input, `test_Example/Toy/Ch1/empty.toy`, is a negative test — 
 
 The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 1 on its own, from the chapter directory.
 
+Every command in this README is numbered by its output (**[1]**–**[12]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix B).
+
 ### 3.1 Building
 
 ```bash
@@ -152,7 +187,7 @@ No preset applies at the chapter level, yet no toolchain flags are needed, becau
 - `CXX=/opt/homebrew/opt/llvm@20/bin/clang++` (and `CC`) selects the compiler.
 - `/opt/homebrew/opt/llvm@20/bin` is on `PATH`, and `find_package` also searches the prefix above each `PATH` entry, so it finds `/opt/homebrew/opt/llvm@20/lib/cmake/{mlir,llvm}` by itself.
 
-In a shell without that setup, pass them explicitly: `-DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++`. (The chapter's CMake targets are in the [appendix](#appendix-what-chapter-1-adds-to-the-build).)
+In a shell without that setup, pass them explicitly: `-DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++`. (The chapter's CMake targets are in appendix A.)
 
 A standalone build puts the binary directly in `build/`; the superbuild's `toy/build/bin/toyc-ch1` behaves identically.
 
@@ -163,13 +198,13 @@ cd /Users/roy/study/mlir/toy/Ch1
 ./build/toyc-ch1 ../../test_Example/Toy/Ch1/ast.toy -emit=ast 2>&1
 ```
 
-- `../../test_Example/Toy/Ch1/ast.toy` — the positional `<input toy file>` (relative to `Ch1/`, i.e. `/Users/roy/study/mlir/test_Example/Toy/Ch1/ast.toy`). This is the same program as `mlir/test/Examples/Toy/Ch1/ast.toy` upstream.
+- `../../test_Example/Toy/Ch1/ast.toy` — the positional `<input toy file>` (relative to `Ch1/`, i.e. `/Users/roy/study/mlir/test_Example/Toy/Ch1/ast.toy`).
 - `-emit=ast` — selects `Action::DumpAST` in the driver: parse the file and pretty-print the resulting AST to **stderr**.
 - `2>&1` — because the dump goes to stderr (see the pitfalls in §5), redirect it if you want to pipe or save it.
 
 ### 3.3 Actual captured output
 
-Real output on this machine (complete, not truncated):
+Real output **[2]** on this machine (complete):
 
 ```text
   Module:
@@ -226,7 +261,7 @@ Every `@file:line:col` in the dump is a `Location` captured by the lexer at the 
 - **`BinOp: * @...:5:25`** — line 5 is `  return transpose(a) * transpose(b);`. The `*` node is the child of `Return`. Its location (col 25) is actually where the *RHS* begins — an artifact of `parseBinOpRHS` taking `lexer.getLastLocation()` *after* consuming the operator. Its two children are the `Call 'transpose'` nodes at cols 10 and 25; note `transpose` is dumped as an ordinary `Call`, not a special node — it is not special-cased in Chapter 1.
 - **`VarDecl a<> @...:11:3`** — `var a = [[1, 2, 3], [4, 5, 6]];`. The `<>` is the empty `VarType` printed by `dump(const VarType&)`: no declared shape, to be inferred. Its child `Literal: <2, 3>[ <3>[ 1.0..., ...` shows the parser-computed dims at every nesting level (`<2, 3>` outer, `<3>` per row) and every number as a `double` in scientific notation (`1.000000e+00`) — remember, Toy's only type is 64-bit float.
 - **`VarDecl b<2, 3> @...:15:3`** — `var b<2, 3> = [1, 2, 3, 4, 5, 6];`. Here the declared type prints as `<2, 3>` but the initializer literal is `<6>[ ... ]` — a rank-1, 6-element tensor. The AST faithfully preserves the mismatch; the *implicit reshape* is a semantic notion handled in later chapters (a `toy.reshape` op in Chapter 2), not in the AST.
-- **`VarDecl c<>` … `VarDecl f<>`** — the four calls to `multiply_transpose` from lines 19/23/27/31, each a `Call` node listing its argument `var:` references with exact source coordinates. Notice `var f = multiply_transpose(a, c);` — the shape-incompatible call — dumps identically to the others: **no error**, because Chapter 1 does zero semantic checking. The FileCheck comments at the bottom of `ast.toy` assert exactly this output shape upstream.
+- **`VarDecl c<>` … `VarDecl f<>`** — the four calls to `multiply_transpose` from lines 19/23/27/31, each a `Call` node listing its argument `var:` references with exact source coordinates. Notice `var f = multiply_transpose(a, c);` — the shape-incompatible call — dumps identically to the others: **no error**, because Chapter 1 does zero semantic checking. The `# CHECK:` lines at the bottom of `ast.toy` assert exactly this output shape.
 
 Two practical notes: the dump goes to **stderr** (use `2>&1` to pipe it, exactly as the `# RUN:` line in `ast.toy` does), and the indentation starts at one level (`  Module:`) because even the root `dump(ModuleAST*)` executes `INDENT()`.
 
@@ -237,40 +272,71 @@ cd /Users/roy/study/mlir/toy/Ch1
 ./build/toyc-ch1 ../../test_Example/Toy/Ch1/empty.toy -emit=ast
 ```
 
-Actual output:
+Real output **[3]** (exit status 0):
 
 ```text
 Parse error (4, 0): expected 'def' in prototype but has Token -1
   Module:
 ```
 
-`empty.toy` contains only comments, so the first real token is `tok_eof` (`-1`). `parsePrototype` fails with the message above (via the `parseError` helper — note it prints the raw token integer, and `-1` maps to `tok_eof`). Interestingly, `parseModule` then observes that the current token *is* EOF, so it still returns a valid — empty — `ModuleAST`, which dumps as a bare `Module:` line, and the process exits with status 0. The upstream FileCheck test only asserts that a `Parse error` is printed and that no assertion fires (`CHECK-NOT: Assert`); it is a robustness test, not an exit-code test.
+`empty.toy` contains only comments, so the first real token is `tok_eof` (`-1`). `parsePrototype` fails with the message above (via the `parseError` helper — note it prints the raw token integer, and `-1` maps to `tok_eof`). Interestingly, `parseModule` then observes that the current token *is* EOF, so it still returns a valid — empty — `ModuleAST`, which dumps as a bare `Module:` line, and the process exits with status 0. The file's `# CHECK:` lines only assert that a `Parse error` is printed and that no assertion fires (`CHECK-NOT: Assert`); it is a robustness test, not an exit-code test.
 
 ### 3.6 Poking at the driver by hand
 
-Chapter 1 has no MLIR tools yet (that starts in Chapter 2, where `toyc-ch2`'s output round-trips through `mlir-opt`-style parsing), but `toyc-ch1` already follows the LLVM driver conventions you'll meet in every `mlir-*` tool. Three quick experiments:
+Chapter 1 has no MLIR tools yet (that starts in Chapter 2), but `toyc-ch1` already follows the LLVM driver conventions you'll meet in every `mlir-*` tool. Three quick experiments.
+
+**Omit `-emit`**: the driver parses, then only hints at the flag — and still exits 0:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch1
-
-# 1. Omit -emit: the driver silently does parse-only and hints at the flag.
 ./build/toyc-ch1 ../../test_Example/Toy/Ch1/ast.toy
-# → No action specified (parsing only?), use -emit=<action>
+```
 
-# 2. stdin is the default input (the cl::opt positional arg defaults to "-"),
-#    so you can pipe programs in without a file — same as mlir-opt/mlir-translate.
+Real output **[4]**:
+
+```text
+No action specified (parsing only?), use -emit=<action>
+```
+
+**stdin is the default input** (the `cl::opt` positional argument defaults to `-`), so programs can be piped in without a file, as with `mlir-opt`/`mlir-translate`:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch1
 echo 'def main() { print([1, 2]); }' | ./build/toyc-ch1 -emit=ast
+```
 
-# 3. --help is flooded with generic LLVM options registered via cl::opt;
-#    only <input toy file> and -emit belong to toyc-ch1.
+Real output **[5]**:
+
+```text
+  Module:
+    Function 
+      Proto 'main' @-:1:1
+      Params: []
+      Block {
+        Print [ @-:1:14
+          Literal: <2>[ 1.000000e+00, 2.000000e+00] @-:1:20
+        ]
+      } // Block
+```
+
+**`--help` is flooded** with generic LLVM options registered via `cl::opt`; only `<input toy file>` and `-emit` belong to `toyc-ch1`:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch1
 ./build/toyc-ch1 --help | wc -l
+```
+
+Real output **[6]**:
+
+```text
+     319
 ```
 
 These three behaviors — action selected by a flag, stdin/`-` as default input, shared `cl::opt` option registry — are the house style of the whole MLIR tool ecosystem (`mlir-opt`, `mlir-translate`, `mlir-tblgen`), which is why every later chapter's driver feels identical.
 
 ## 4. Code Walkthrough
 
-The frontend is intentionally "similar to the LLVM Kaleidoscope tutorial" (as the official doc says) and is not the interesting part of the MLIR tutorial — but it is worth understanding thoroughly once, because every later chapter consumes the AST it produces.
+The frontend is intentionally "similar to the LLVM Kaleidoscope tutorial" and is not the interesting part of the MLIR tutorial — but it is worth understanding thoroughly once, because every later chapter consumes the AST it produces.
 
 ### 4.1 Tokens and the Lexer
 
@@ -358,10 +424,33 @@ The concrete `LexerBuffer final : public Lexer` at the bottom of the file walks 
 
 1. **Skip whitespace**, then record `lastLocation` (line/col of the first non-space char) so the token's location points at its beginning.
 2. **Identifier / keyword**: if the character is alphabetic, greedily consume `[a-zA-Z0-9_]*`, then compare the spelling against `"return"`, `"def"`, `"var"`; anything else is `tok_identifier` (spelling saved in `identifierStr`).
-3. **Number**: if it starts with a digit or `.`, consume `[0-9.]+` and convert with `strtod` into `numVal`, returning `tok_number`. (Note this accepts malformed input like `1.2.3` — `strtod` just stops early. Toy tolerates it for simplicity.)
+3. **Number**: if it starts with a digit or `.`, consume `[0-9.]+` and convert with `strtod` into `numVal`, returning `tok_number`. (Note this accepts malformed input like `1.2.3` — `strtod` just stops early. Toy tolerates it for simplicity; see the run below.)
 4. **Comment**: on `#`, consume to end of line and *recurse* (`return getTok();`) to fetch the next real token.
 5. **EOF**: return `tok_eof` without consuming it.
 6. **Anything else**: return the character itself as a token (`Token(lastChar)`), advancing past it.
+
+The number rule in action: `1.2.3` is one `tok_number` token, and `strtod` reads only `1.2` of it:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch1
+./build/toyc-ch1 -emit=ast <<'EOF'
+def main() { print(1.2.3); }
+EOF
+```
+
+Real output **[7]**:
+
+```text
+  Module:
+    Function 
+      Proto 'main' @-:1:1
+      Params: []
+      Block {
+        Print [ @-:1:14
+          1.200000e+00 @-:1:20
+        ]
+      } // Block
+```
 
 Two implementation details worth internalizing:
 
@@ -582,7 +671,23 @@ literal_list  ::= tensorliteral (',' tensorliteral)*
   return std::make_unique<CallExprAST>(std::move(loc), name, std::move(args));
   ```
 
-  So `print` is resolved *syntactically*, by name, at parse time — and it is arity-checked (exactly one argument), the only "semantic" check in the whole parser. `transpose`, by contrast, stays a generic `CallExprAST` until Chapter 2 special-cases it during MLIR generation.
+  So `print` is resolved *syntactically*, by name, at parse time — and it is arity-checked (exactly one argument), the only "semantic" check in the whole parser. A second argument is rejected; the second message appears because `parseModule` then stops short of EOF:
+
+  ```bash
+  cd /Users/roy/study/mlir/toy/Ch1
+  ./build/toyc-ch1 -emit=ast <<'EOF'
+  def main() { print(a, b); }
+  EOF
+  ```
+
+  Real output **[8]** (exit status 1):
+
+  ```text
+  Parse error (1, 25): expected '<single arg>' as argument to print() but has Token 59 ';'
+  Parse error (1, 25): expected 'nothing' at end of module but has Token 59 ';'
+  ```
+
+  `transpose`, by contrast, stays a generic `CallExprAST` until Chapter 2 special-cases it during MLIR generation.
 
 - `parseTensorLiteralExpr` — `tensorLiteral ::= [ literalList ] | number`. This is the most interesting production. At each `[` nesting level it collects elements (either numbers or recursively parsed nested literals) into `values`, then computes the shape:
 
@@ -590,6 +695,30 @@ literal_list  ::= tensorliteral (',' tensorliteral)*
   2. If any element is itself a `LiteralExprAST`, take the first element's `dims` and append them, then **verify every sibling has identical dims** — this rejects ragged arrays like `[[1, 2], [3]]` with the error `expected 'uniform well-nested dimensions' inside literal expression`.
 
   The result is a `LiteralExprAST` whose `dims` for `[[1, 2, 3], [4, 5, 6]]` is `{2, 3}`.
+
+  A ragged literal gets that error — and then crashes the driver:
+
+  ```bash
+  cd /Users/roy/study/mlir/toy/Ch1
+  ./build/toyc-ch1 -emit=ast <<'EOF'
+  def main() { var a = [[1, 2], [3]]; }
+  EOF
+  ```
+
+  Real output **[9]** (exit status 134; abridged — the shell's own `Abort trap: 6` report, which carries a process ID, is left out):
+
+  ```text
+  Parse error (1, 35): expected 'uniform well-nested dimensions' inside literal expression but has Token 59 ';'
+    Module:
+      Function 
+        Proto 'main' @-:1:1
+        Params: []
+        Block {
+          VarDecl a<> @-:1:14
+  Assertion failed: (detail::isPresent(Val) && "dyn_cast on a non-existent value"), function dyn_cast, file Casting.h, line 662.
+  ```
+
+  `parseTensorLiteralExpr` returns `nullptr`, but `parseDeclaration` builds its `VarDeclExprAST` without checking the initializer, so parsing continues with a null initializer and the dumper's `dyn_cast` asserts on it (exit status 134 is `SIGABRT`). The parser has no error recovery; a failed sub-parse is only safe where the caller checks for `nullptr`.
 
 **Operator precedence: `parseExpression` + `parseBinOpRHS`.** Binary expressions use *operator-precedence climbing*, the same algorithm as Kaleidoscope. The precedence table is:
 
@@ -649,6 +778,36 @@ Worked example, `a + b * c + d`:
 1. LHS = `a`; sees `+` (20 ≥ 0), parses RHS primary `b`.
 2. Peeks at `*` (40 > 20), so it recurses `parseBinOpRHS(21, b)`, which grabs `b * c` and stops at the second `+` (20 < 21).
 3. Merges into `(a + (b*c))`, loops; second `+` (20 ≥ 0) grabs `d`, giving `((a + (b*c)) + d)` — correct precedence *and* left associativity.
+
+The dump shows exactly that tree — the outer `+` holds `(a + (b*c))` and `d`:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch1
+./build/toyc-ch1 -emit=ast <<'EOF'
+def main() { return a + b * c + d; }
+EOF
+```
+
+Real output **[10]**:
+
+```text
+  Module:
+    Function 
+      Proto 'main' @-:1:1
+      Params: []
+      Block {
+        Return
+          BinOp: + @-:1:33
+            BinOp: + @-:1:25
+              var: a @-:1:21
+              BinOp: * @-:1:29
+                var: b @-:1:25
+                var: c @-:1:29
+            var: d @-:1:33
+      } // Block
+```
+
+Each `BinOp` location is where its right-hand side starts (column 25 is `b`, 29 is `c`, 33 is `d`), because `parseBinOpRHS` takes the location after consuming the operator.
 
 **Error reporting** is centralized in a small template that prints the expectation, context, and the lexer's location, then returns `nullptr` typed for the caller:
 
@@ -739,7 +898,27 @@ void ASTDumper::dump(VarDeclExprAST *varDecl) {
 }
 ```
 
-Tensor literals get special treatment: a free function `printLitHelper` recurses through nested literals and prints the **dims in angle brackets at every nesting level**, so `[[1, 2], [3, 4]]` prints as `<2,2>[<2>[ 1, 2 ], <2>[ 3, 4 ] ]`. `llvm::interleaveComma` (another ubiquitous LLVM helper) handles the comma separation.
+Tensor literals get special treatment: a free function `printLitHelper` recurses through nested literals and prints the **dims in angle brackets at every nesting level**, with every number in scientific notation. `llvm::interleaveComma` (another ubiquitous LLVM helper) handles the comma separation:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch1
+./build/toyc-ch1 -emit=ast <<'EOF'
+def main() { var a = [[1, 2], [3, 4]]; }
+EOF
+```
+
+Real output **[11]**:
+
+```text
+  Module:
+    Function 
+      Proto 'main' @-:1:1
+      Params: []
+      Block {
+        VarDecl a<> @-:1:14
+          Literal: <2, 2>[ <2>[ 1.000000e+00, 2.000000e+00], <2>[ 3.000000e+00, 4.000000e+00]] @-:1:22
+      } // Block
+```
 
 One practical detail: the dumper writes to **`llvm::errs()` — stderr, not stdout**. If you want to pipe or save the AST dump, redirect with `2>&1`.
 
@@ -818,11 +997,12 @@ If you run without `-emit=ast`, the file is still parsed (so you get parse error
 - **The AST dump goes to stderr**, not stdout. `./build/toyc-ch1 file.toy -emit=ast > out.txt` produces an empty file; use `2> out.txt` or `2>&1`.
 - **Forgetting `-emit=ast`** silently does parse-only and prints `No action specified (parsing only?), use -emit=<action>` — easy to misread as a failure.
 - **Exit codes are not a reliable error signal** in Chapter 1: the `empty.toy` parse error still exits 0 with an empty `Module:` dump, because `parseModule` treats "stopped exactly at EOF" as success.
+- **Some parse errors crash the driver**: a malformed variable initializer (a ragged literal, section 4.3) leaves a null initializer in the AST, and the dumper asserts on it.
 - **Wrong `MLIR_DIR`** is the classic out-of-tree failure: if `find_package(MLIR)` can't locate `/opt/homebrew/opt/llvm@20/lib/cmake/mlir`, configuration dies immediately. `CMakePresets.json` pins it (along with `LLVM_DIR` and the compilers) for the superbuild, but a *standalone* chapter configure relies on the environment (`llvm@20/bin` on `PATH`, `CXX`) or on `-DMLIR_DIR=...` passed by hand (see section 3.1). Also keep the compiler consistent with the library (`/opt/homebrew/opt/llvm@20/bin/clang++`) — mixing Apple Clang's libc++ with Homebrew LLVM 20 binaries can cause ABI-flavored link/runtime surprises, and the `CMAKE_OSX_DEPLOYMENT_TARGET` pin exists to silence version-mismatch warnings.
 - **Locations are 1-based lines, and a `BinaryExprAST`'s location points at its RHS** (taken after consuming the operator) — don't be surprised when `BinOp: *` reports column 25 for an operator at column 23.
 - The `--help` output is flooded with generic LLVM options inherited from `cl::opt` registration; only the positional filename and `-emit` belong to `toyc-ch1`.
 
-## Appendix: What Chapter 1 adds to the build
+## Appendix A: What Chapter 1 adds to the build
 
 Below the standalone guard, `Ch1/CMakeLists.txt` has the smallest targets section of all seven chapters:
 
@@ -842,8 +1022,29 @@ target_link_libraries(toyc-ch1
 
 - Exactly two translation units, as noted earlier — `Lexer.h`, `Parser.h`, and `AST.h` are header-only.
 - `include_directories(include/)` makes `#include "toy/AST.h"` resolve to `Ch1/include/toy/AST.h`.
-- **Why only `MLIRSupport`?** Chapter 1 uses no MLIR IR at all — only LLVM *support* utilities (`llvm::StringRef`, `MemoryBuffer`, `raw_ostream`, `cl::opt`, `TypeSwitch`, `Twine`, `interleaveComma`, casting). `MLIRSupport` is MLIR's small support library, and linking it transitively pulls in `LLVMSupport` (and friends) that actually provide those symbols. The upstream in-tree CMakeLists does the equivalent: it, too, links only `MLIRSupport` for Ch1. Dialect/IR libraries (`MLIRIR`, `MLIRParser`, ...) only appear starting in Chapter 2 when we build real MLIR operations.
+- **Why only `MLIRSupport`?** Chapter 1 uses no MLIR IR at all — only LLVM *support* utilities (`llvm::StringRef`, `MemoryBuffer`, `raw_ostream`, `cl::opt`, `TypeSwitch`, `Twine`, `interleaveComma`, casting). `MLIRSupport` is MLIR's small support library, and linking it transitively pulls in `LLVMSupport` (and friends) that actually provide those symbols. Dialect/IR libraries (`MLIRIR`, `MLIRParser`, ...) only appear starting in Chapter 2 when we build real MLIR operations.
 - **No TableGen anywhere** — there is no dialect yet. The `include(TableGen)`/`AddMLIR` machinery set up at the top level sits unused until Chapter 2.
+
+## Appendix B: Running this README's commands: `examples.sh`
+
+[`examples.sh`](examples.sh) — a symlink to the shared [`../examples.sh`](../examples.sh) — runs the commands of this README and shows each one with its output and exit status:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch1
+./examples.sh -l
+```
+
+Real output **[12]** (abridged):
+
+```text
+[ 1] 2     ./build/toyc-ch1 -emit=ast <<'EOF'
+[ 2] 3.2   ./build/toyc-ch1 ../../test_Example/Toy/Ch1/ast.toy -emit=ast 2>&1
+...
+[11] 4.4   ./build/toyc-ch1 -emit=ast <<'EOF'
+[12] B     ./examples.sh -l
+```
+
+The script reads the commands from `README.md` on every run. A command is every `bash` code block in file order, except the build block (it contains `cmake`) and file excerpts (a `***path***` label above the fence). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". So adding, removing or reordering a command block renumbers the ones after it, and their **[N]** labels must be updated to match.
 
 ## Links
 

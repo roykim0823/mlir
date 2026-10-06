@@ -32,14 +32,14 @@ run_ch1() {
 
 run_ch2() {
   local B; B=$(bin 2)
-  "$B" Ch2/codegen.toy -emit=mlir -mlir-print-debuginfo
+  "$B" "$TESTS/Ch2/codegen.toy" -emit=mlir -mlir-print-debuginfo
 
   # Round trip: emit MLIR to a file, then re-parse that .mlir and emit again.
   # If the second output parses and prints cleanly, the dialect's custom
   # printers and parsers are consistent with each other.
   local tmp
   tmp=$(mktemp -t toy-ch2-codegen).mlir
-  "$B" Ch2/codegen.toy -emit=mlir -mlir-print-debuginfo 2> "$tmp"
+  "$B" "$TESTS/Ch2/codegen.toy" -emit=mlir -mlir-print-debuginfo 2> "$tmp"
   "$B" "$tmp" -emit=mlir
   rm -f "$tmp"
 }

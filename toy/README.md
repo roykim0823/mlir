@@ -53,21 +53,31 @@ mlir/                            # repo root
 │   ├── CMakeLists.txt           # superbuild: find_package(MLIR/LLVM) once, add_subdirectory(Ch1..Ch7)
 │   ├── CMakePresets.json        # pins Ninja, Release, Homebrew llvm@20 clang, MLIR_DIR/LLVM_DIR
 │   ├── build.sh                 # ./build.sh [ch1..ch7|all] [--fresh] — configure once, build incrementally
-│   ├── run.sh                   # ./run.sh <ch1..ch7|all> — each chapter's demo commands
+│   ├── run.sh                   # ./run.sh <ch1..ch7|all> — a few demo commands per chapter (superbuild binaries)
+│   ├── examples.sh              # runs every command of a chapter README; invoked as ChN/examples.sh
+│   ├── CLAUDE.md                # conventions all chapter READMEs follow
 │   ├── build/                   # shared build tree (created by build.sh; binaries in build/bin/toyc-ch1..7)
 │   └── Ch1/ … Ch7/              # one directory per tutorial chapter:
 │       ├── README.md            #   the chapter's study doc
+│       ├── examples.sh          #   symlink to ../examples.sh
 │       ├── CMakeLists.txt       #   dual-mode: chapter targets + standalone-only boilerplate guard
 │       ├── toyc.cpp             #   the chapter's compiler driver
 │       ├── include/toy/         #   headers: Lexer.h, Parser.h, AST.h (+ Dialect.h, Ops.td, … from Ch2 on)
 │       ├── parser/              #   AST.cpp (AST dumper) — the lexer/parser themselves are header-only
-│       └── mlir/                #   MLIR-side code, from Ch2 on: Dialect.cpp, MLIRGen.cpp, passes, lowerings
+│       ├── mlir/                #   MLIR-side code, from Ch2 on: Dialect.cpp, MLIRGen.cpp, passes, lowerings
+│       └── build/               #   standalone chapter build (cmake -S ChN -B ChN/build), if you make one
+│                                #   chapter-specific extras:
+│                                #     Ch2/run_mlir-tblgen.sh     run mlir-tblgen by hand into Ch2/build/*.inc
+│                                #     Ch2/include/toy/Ops/       Ops0–5.td, the ODS walkthrough stages (not built)
+│                                #     Ch6/MLIR_LINKING_PITFALL.md  the static+shared TypeID segfault post-mortem
 └── test_Example/Toy/Ch1..Ch7/   # test inputs (ast.toy, codegen.toy, …), mirroring upstream mlir/test/Examples/Toy
 ```
 
 Each chapter's README covers only what that chapter adds or changes — its own
 files, build wiring, and run commands; the shared layout above is documented
-only here.
+only here. `CLAUDE.md` records the conventions the chapter READMEs share
+(section order, the real-output scheme, numbered commands, appendices), so
+that edits keep them consistent.
 
 ### Prerequisites
 
@@ -104,7 +114,7 @@ binaries from `build/bin/`. You can of course also run a binary directly:
 ```
 
 To build one chapter standalone (e.g. to experiment without touching the
-rest), configure it directly:
+rest, or to run its `examples.sh`), configure it directly:
 
 ```bash
 cmake -S Ch3 -B Ch3/build -G Ninja
@@ -119,9 +129,23 @@ finds `llvm@20/lib/cmake/{mlir,llvm}` by itself. Without that environment,
 pass the locations explicitly:
 `-DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir -DLLVM_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/llvm -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++`.
 
+### Two ways to run a chapter's commands
+
+- **`./run.sh chN`** runs a handful of demo commands for the chapter. It uses
+  the superbuild's `build/bin/toyc-chN` (falling back to a standalone
+  `ChN/build/toyc-chN`), so `./build.sh` is all it needs.
+- **`ChN/examples.sh`** runs *every* command shown in that chapter's README,
+  exactly as written, and prints each command with its output and exit status
+  (`ChN/examples.sh 7` runs only command [7], `ChN/examples.sh -l` lists them).
+  The README commands are written for the chapter directory and call
+  `./build/toyc-chN`, the **standalone** build below — so build the chapter
+  standalone first. `examples.sh` is one script in `toy/`; each
+  `ChN/examples.sh` is a symlink to it, and it reads the README next to the
+  symlink it is run through.
+
 ## The build system
 
-This section explains the shared build machinery **once**; each chapter README's "Building" section then covers only what that chapter *adds* (its own targets, TableGen steps, and link line). Upstream builds the Toy chapters in-tree with monorepo helpers like `add_toy_chapter`; everything below is the out-of-tree equivalent.
+This section explains the shared build machinery **once**; each chapter README's build appendix ("What Chapter N adds to the build") then covers only what that chapter *adds* (its own targets, TableGen steps, and link line). Upstream builds the Toy chapters in-tree with monorepo helpers like `add_toy_chapter`; everything below is the out-of-tree equivalent.
 
 ### The superbuild
 
@@ -193,7 +217,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 ```
 
-In the superbuild, `CMAKE_SOURCE_DIR` is `toy/` while `CMAKE_CURRENT_SOURCE_DIR` is `toy/ChN/`, so the guard is false and the top level's setup is reused. Configured standalone (`cmake -S ChN`), the guard is true and the chapter bootstraps itself — that's what makes the standalone recipe in "Build & run" work with no preset. Below the guard, each chapter declares only its targets: TableGen steps, the `toyc-chN` executable, `add_dependencies` on the generated headers, and the link line. **Those parts are the chapter-specific build content, documented in each chapter's README.**
+In the superbuild, `CMAKE_SOURCE_DIR` is `toy/` while `CMAKE_CURRENT_SOURCE_DIR` is `toy/ChN/`, so the guard is false and the top level's setup is reused. Configured standalone (`cmake -S ChN`), the guard is true and the chapter bootstraps itself — that's what makes the standalone recipe in "Build & run" work with no preset. Below the guard, each chapter declares only its targets: TableGen steps, the `toyc-chN` executable, `add_dependencies` on the generated headers, and the link line. **Those parts are the chapter-specific build content, documented in each chapter README's build appendix.**
 
 ### Build script mechanics and artifacts
 
@@ -207,7 +231,7 @@ Artifacts land in `toy/build/`: the binaries you care about in `build/bin/toyc-c
 
 ### What each chapter adds to the build
 
-| Ch | New build ingredients (details in that chapter's README) |
+| Ch | New build ingredients (details in that chapter README's build appendix) |
 |---|---|
 | [1](Ch1/README.md) | Plain `add_executable`; links only `MLIRSupport` — no MLIR IR is used yet |
 | [2](Ch2/README.md) | **TableGen enters**: `Ops.td` → `mlir_tablegen(-gen-op-decls/-gen-op-defs/...)`, `add_public_tablegen_target`, and the `add_dependencies(toyc-ch2 ToyCh2OpsIncGen)` race guard; links monolithic `MLIR` + `LLVM` dylibs |
@@ -219,10 +243,12 @@ Artifacts land in `toy/build/`: the binaries you care about in `build/bin/toyc-c
 
 ## The Chapters
 
-Each linked document covers the full content of the corresponding official
-chapter, plus a file-by-file walkthrough of the code in this repo, an
-explanation of the CMake/TableGen build wiring, and the **actual captured
-output** of every `run.sh` command, annotated line by line.
+Each linked document covers every topic of the corresponding official chapter,
+in its order, with the real code of this repo and the **real output** of every
+command it shows — each output numbered and re-runnable with the chapter's
+`examples.sh`. The main sections follow the chapter's essential path; reference
+material (per-op details, generated code, extra inputs, the CMake/TableGen
+build wiring) is in each document's lettered appendices.
 
 | # | Study doc | Official chapter | What you learn |
 |---|-----------|------------------|----------------|
