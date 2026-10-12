@@ -48,27 +48,6 @@ Three ideas are worth internalizing before reading the code:
 2. **Full conversion vs. partial conversion.** Chapter 5 used `applyPartialConversion` (unknown ops may survive). Here we use `applyFullConversion`: after the pass, *only* LLVM-dialect operations (plus the top-level `builtin.module`) may remain. Anything else is a hard error.
 3. **The LLVM dialect is still MLIR.** `-emit=mlir-llvm` prints MLIR operations (`llvm.func`, `llvm.call`, `llvm.br`, …) that model LLVM IR 1:1. A separate *translation* step (`translateModuleToLLVMIR`) — not a dialect conversion — produces an actual `llvm::Module`. From that point on we are in classic LLVM land: optimization pipelines, target machines, ORC JIT.
 
-### Where Chapter 6 lives in this repo
-
-How this repo is organized — the out-of-tree CMake superbuild at `toy/`, the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers — is documented once in the top-level [README](../README.md#repository-layout). This chapter also builds as a standalone project (section 4.1). Chapter 6 specifics:
-
-| Item | Location / value |
-|---|---|
-| Chapter 6 code | `/Users/roy/study/mlir/toy/Ch6/` |
-| Build | `cd toy && ./build.sh ch6` → binary at `./build/bin/toyc-ch6` |
-| Run | `cd toy && ./run.sh ch6` → pipes `def main() { print([[1, 2], [3, 4]]); }` through `-emit=mlir`, `llvm`, `mlir-affine`, `mlir-llvm`, and `jit` |
-| Test inputs | `/Users/roy/study/mlir/test_Example/Toy/Ch6/` (`jit.toy`, `llvm-lowering.mlir`, `codegen.toy`, `affine-lowering.mlir`, …) |
-
-The lexer, parser, AST, `MLIRGen`, dialect, shape inference, combiner patterns, and `LowerToAffineLoops.cpp` are carried over unchanged from Chapter 5. What is new:
-
-| File | Role |
-|---|---|
-| `mlir/LowerToLLVM.cpp` | `PrintOpLowering` + `ToyToLLVMLoweringPass` (full conversion to the LLVM dialect) |
-| `include/toy/Passes.h` | Declares `createLowerToLLVMPass()` |
-| `toyc.cpp` | New actions `-emit=mlir-llvm`, `-emit=llvm`, `-emit=jit`; `dumpLLVMIR()` and `runJit()` |
-| `CMakeLists.txt` | Links the ExecutionEngine — the interesting (and dangerous) part on macOS |
-| [`MLIR_LINKING_PITFALL.md`](MLIR_LINKING_PITFALL.md) | Post-mortem of the static+shared TypeID segfault |
-
 The appendices hold the extras: more runs — the `llvm-lowering.mlir` example through the JIT and FileCheck, more inputs (A), replacing the backend with stock tools (B), what Chapter 6 adds to the build (C), and the script that runs every command in this README (D).
 
 ---

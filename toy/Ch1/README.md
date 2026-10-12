@@ -15,31 +15,6 @@ Chapter 1 builds exactly that frontend and nothing more. The deliverable is a sm
 
 Nothing in this chapter touches MLIR APIs yet — the AST is plain C++ classes. The only MLIR involvement is in the *build system*: we compile against the MLIR/LLVM headers and link `MLIRSupport`, which establishes the out-of-tree CMake plumbing that every later chapter builds on. Chapter 2 will take this same AST and emit real MLIR from it.
 
-### Where Chapter 1 lives in this repo
-
-How this repo is organized — the out-of-tree CMake superbuild at `toy/`, the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers — is documented once in the top-level [README](../README.md#repository-layout). This chapter also remains configurable as a standalone project (see section 3.1). Chapter 1 specifics:
-
-| Item | Location / value |
-|---|---|
-| Chapter 1 code | `/Users/roy/study/mlir/toy/Ch1/` |
-| Build | `cd toy && ./build.sh ch1` → binary at `./build/bin/toyc-ch1` |
-| Run | `cd toy && ./run.sh ch1` → `./build/bin/toyc-ch1 ../test_Example/Toy/Ch1/ast.toy -emit=ast` |
-| Test inputs | `/Users/roy/study/mlir/test_Example/Toy/Ch1/` (`ast.toy`, `empty.toy`) |
-
-Chapter 1's own files:
-
-```text
-Ch1/
-├── CMakeLists.txt      # dual-mode: chapter targets + standalone-only boilerplate guard
-├── toyc.cpp            # driver: CLI options + main()
-├── parser/
-│   └── AST.cpp         # AST pretty-printer (dumper)
-└── include/toy/
-    ├── Lexer.h         # tokens + lexer (header-only)
-    ├── Parser.h        # recursive-descent parser (header-only)
-    └── AST.h           # AST node class hierarchy (header-only)
-```
-
 Note that the lexer, parser, and AST are all header-only; the only two translation units are `toyc.cpp` and `parser/AST.cpp`.
 
 Two appendices hold the extras: what Chapter 1 adds to the build (A), and the script that runs every command in this README (B).
@@ -50,7 +25,7 @@ Toy is a **tensor-based** language: you can define functions, do some math, and 
 
 - **Only one element type**: every value is a 64-bit floating point number (`double` in C parlance, `f64` in MLIR). There are no integers, booleans, or strings.
 - **Values are tensors** of rank ≤ 2 (scalars, 1-D arrays, and 2-D matrices), either implicitly shaped from an initializer or explicitly shaped in a declaration. For the tutorial's codegen we limit ourselves to tensors of rank 2 or less.
-- **Values are immutable** — every operation returns a *new* value (this maps naturally onto SSA form later). Memory deallocation is automatic; you never free anything.
+- **Values are immutable** — every operation returns a *new* value (this maps naturally onto SSA (static single assignment) form later). Memory deallocation is automatic; you never free anything.
 - **Two builtins**: `transpose()` and `print()`.
 - **Comments** start with `#` and run to the end of the line.
 - **Statements** end with `;` and function bodies are `{ ... }` blocks.
@@ -258,7 +233,7 @@ Every `@file:line:col` in the dump is a `Location` captured by the lexer at the 
 
 - **`Module:`** — the root `ModuleAST`; each `Function` under it is one `def`.
 - **`Proto 'multiply_transpose' @...:4:1` / `Params: [a, b]`** — line 4 of `ast.toy` is `def multiply_transpose(a, b) {` (lines 1–3 are comments, and line counting starts at 1). The prototype records only the name and parameter names — no types, because Toy prototypes are shape-generic.
-- **`BinOp: * @...:5:25`** — line 5 is `  return transpose(a) * transpose(b);`. The `*` node is the child of `Return`. Its location (col 25) is actually where the *RHS* begins — an artifact of `parseBinOpRHS` taking `lexer.getLastLocation()` *after* consuming the operator. Its two children are the `Call 'transpose'` nodes at cols 10 and 25; note `transpose` is dumped as an ordinary `Call`, not a special node — it is not special-cased in Chapter 1.
+- **`BinOp: * @...:5:25`** — line 5 is `  return transpose(a) * transpose(b);`. The `*` node is the child of `Return`. Its location (col 25) is actually where the *RHS* (right-hand side) begins — an artifact of `parseBinOpRHS` taking `lexer.getLastLocation()` *after* consuming the operator. Its two children are the `Call 'transpose'` nodes at cols 10 and 25; note `transpose` is dumped as an ordinary `Call`, not a special node — it is not special-cased in Chapter 1.
 - **`VarDecl a<> @...:11:3`** — `var a = [[1, 2, 3], [4, 5, 6]];`. The `<>` is the empty `VarType` printed by `dump(const VarType&)`: no declared shape, to be inferred. Its child `Literal: <2, 3>[ <3>[ 1.0..., ...` shows the parser-computed dims at every nesting level (`<2, 3>` outer, `<3>` per row) and every number as a `double` in scientific notation (`1.000000e+00`) — remember, Toy's only type is 64-bit float.
 - **`VarDecl b<2, 3> @...:15:3`** — `var b<2, 3> = [1, 2, 3, 4, 5, 6];`. Here the declared type prints as `<2, 3>` but the initializer literal is `<6>[ ... ]` — a rank-1, 6-element tensor. The AST faithfully preserves the mismatch; the *implicit reshape* is a semantic notion handled in later chapters (a `toy.reshape` op in Chapter 2), not in the AST.
 - **`VarDecl c<>` … `VarDecl f<>`** — the four calls to `multiply_transpose` from lines 19/23/27/31, each a `Call` node listing its argument `var:` references with exact source coordinates. Notice `var f = multiply_transpose(a, c);` — the shape-incompatible call — dumps identically to the others: **no error**, because Chapter 1 does zero semantic checking. The `# CHECK:` lines at the bottom of `ast.toy` assert exactly this output shape.
@@ -418,7 +393,7 @@ private:
 
 `consume(tok)` is a debugging aid: it advances like `getNextToken()` but asserts the current token is what the caller believes it is.
 
-The concrete `LexerBuffer final : public Lexer` at the bottom of the file walks a `[begin, end)` memory buffer and serves it one line at a time. This split means you could just as easily lex from stdin line-by-line (e.g. for a REPL) without touching the tokenizer.
+The concrete `LexerBuffer final : public Lexer` at the bottom of the file walks a `[begin, end)` memory buffer and serves it one line at a time. This split means you could just as easily lex from stdin line-by-line (e.g. for a REPL (read-eval-print loop)) without touching the tokenizer.
 
 **How `getNextToken` works.** `getNextToken()` just caches the result of the private workhorse `getTok()`, which is a hand-rolled state machine:
 
@@ -494,7 +469,7 @@ public:
 
 An empty `VarType::shape` means "no shape specified — infer it later." This models `var a = ...` (shape `<>`) versus `var b<2, 3> = ...` (shape `{2, 3}`).
 
-**LLVM-style RTTI.** The explicit `kind` enum exists because LLVM code is built without C++ RTTI (`-fno-rtti`); instead it uses [LLVM-style RTTI](https://llvm.org/docs/HowToSetUpLLVMStyleRTTI.html), where each subclass provides a static `classof` predicate that `llvm::isa<>`, `llvm::cast<>`, and `llvm::dyn_cast<>` consult — e.g. in `NumberExprAST`:
+**LLVM-style RTTI (run-time type information).** The explicit `kind` enum exists because LLVM code is built without C++ RTTI (`-fno-rtti`); instead it uses [LLVM-style RTTI](https://llvm.org/docs/HowToSetUpLLVMStyleRTTI.html), where each subclass provides a static `classof` predicate that `llvm::isa<>`, `llvm::cast<>`, and `llvm::dyn_cast<>` consult — e.g. in `NumberExprAST`:
 
 ***include/toy/AST.h***
 ```cpp
@@ -738,7 +713,7 @@ int getTokPrecedence() {
 }
 ```
 
-Only `+`, `-` (precedence 20) and `*` (precedence 40) are operators; every other token returns −1, meaning "not a binop — stop." `parseExpression` parses a primary as the LHS, then hands it to `parseBinOpRHS(0, lhs)`, which loops:
+Only `+`, `-` (precedence 20) and `*` (precedence 40) are operators; every other token returns −1, meaning "not a binop — stop." `parseExpression` parses a primary as the LHS (left-hand side), then hands it to `parseBinOpRHS(0, lhs)`, which loops:
 
 ***include/toy/Parser.h***
 ```cpp
@@ -830,7 +805,7 @@ std::unique_ptr<R> parseError(T &&expected, U &&context = "") {
 
 This file implements the `toy::dump(ModuleAST&)` declared in `AST.h`. It is a straightforward tree walk with pretty indentation, and it introduces two idioms you will keep seeing in MLIR code.
 
-**Idiom 1: RAII indentation.** The current indent level is a plain `int` on the `ASTDumper`; a tiny guard bumps it on entry to a node and restores it on scope exit:
+**Idiom 1: RAII indentation.** (RAII: *resource acquisition is initialization*.) The current indent level is a plain `int` on the `ASTDumper`; a tiny guard bumps it on entry to a node and restores it on scope exit:
 
 ***parser/AST.cpp***
 ```cpp
@@ -874,7 +849,7 @@ void ASTDumper::dump(ExprAST *expr) {
 - Every node already carries a kind tag (`ExprAST::getKind()`) because LLVM builds with `-fno-rtti` — no `dynamic_cast` — and implements its own casting (`isa`/`dyn_cast` via `classof`). Given a cheap integer that identifies the concrete type, the visitor's second virtual call is redundant: dispatch is a switch on the kind.
 - `TypeSwitch` above is exactly a *lambda visitor*: one handler per concrete type, assembled inline — right-sized for a single-use pass like this dumper.
 - Ch2's `MLIRGen` is a *codegen visitor* in shape (one class holding the `OpBuilder` and symbol table, one `mlirGen(XxxAST&)` overload per node) that dispatches via `switch (expr.getKind())` — a hand-rolled `std::variant` + `std::visit`.
-- When LLVM does want reusable visitor scaffolding it uses CRTP forms (`llvm::InstVisitor`, Clang's `RecursiveASTVisitor`, MLIR's `AffineExprVisitor`) — same one-handler-per-type organization, dispatch resolved at compile time.
+- When LLVM does want reusable visitor scaffolding it uses CRTP (curiously recurring template pattern) forms (`llvm::InstVisitor`, Clang's `RecursiveASTVisitor`, MLIR's `AffineExprVisitor`) — same one-handler-per-type organization, dispatch resolved at compile time.
 
 The classic visitor's real payoff — adding new passes without touching the AST — buys nothing here: Toy's AST is tiny, frozen (it grows once, in Ch7), and has exactly two consumers (this dumper and Ch2's `MLIRGen`) before the program becomes MLIR for good. From Ch3 on, traversal-plus-dispatch is MLIR's job (`walk()`, `RewritePattern`s, and — in Ch4 — op interfaces), which handles an *open* set of ops that no fixed visitor interface could enumerate.
 

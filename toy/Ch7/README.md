@@ -26,37 +26,6 @@ This is a very common pattern in real MLIR-based compilers: high-level types tha
 
 The appendices hold the extras: the `-opt` pipeline pass by pass (A), more inputs — a nested struct and the error paths (B), a custom type outside its dialect (C), what Chapter 7 adds to the build (D), and the script that runs every command in this README (E).
 
-### Where Chapter 7 lives in this repo
-
-The superbuild at `toy/`, the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers are documented once in the top-level [README](../README.md#repository-layout). This chapter also remains configurable as a standalone project (see section 9.1). Chapter 7 specifics:
-
-| Item | Location / value |
-|---|---|
-| Chapter 7 code | `/Users/roy/study/mlir/toy/Ch7/` |
-| Build | `cd toy && ./build.sh ch7` → binary at `./build/bin/toyc-ch7` |
-| Run | `cd toy && ./run.sh ch7` → `./build/bin/toyc-ch7 ../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir` |
-| Test inputs | `/Users/roy/study/mlir/test_Example/Toy/Ch7/` (`struct-ast.toy`, `struct-codegen.toy`, `struct-opt.mlir`, `jit.toy`, plus the Ch1–Ch6 regression files) |
-
-All struct support lives in files that already existed in Chapter 6 — there is no new source file:
-
-```text
-Ch7/
-├── CMakeLists.txt              # same targets as Ch6 (appendix D)
-├── toyc.cpp                    # driver: unchanged pipeline, one extra canonicalizer
-├── parser/
-│   └── AST.cpp                 # dumper: prints Struct records and struct literals
-├── include/toy/
-│   ├── Lexer.h                 # + tok_struct
-│   ├── AST.h                   # + RecordAST, StructAST, StructLiteralExprAST, VarType::name
-│   ├── Parser.h                # + parseStruct, typed declarations, struct literals, '.'
-│   ├── Dialect.h               # + class StructType
-│   └── Ops.td                  # + Toy_StructType, Toy_Type, struct_constant, struct_access
-└── mlir/
-    ├── Dialect.cpp             # + StructTypeStorage, parseType/printType, materializeConstant
-    ├── MLIRGen.cpp             # + structMap, struct literals, member access
-    └── ToyCombine.cpp          # + fold() hooks
-```
-
 ---
 
 ## 2. Defining a `struct` in Toy
@@ -1888,7 +1857,7 @@ cd /Users/roy/study/mlir/toy/Ch7
 
 `struct-ast.toy` is the same program as `struct-codegen.toy` (section 2.1) behind a different `RUN:` header, so struct definitions start at line 3.
 
-Actual output **[15]**:
+Real output **[15]**:
 
 ```text
   Module:
@@ -1948,7 +1917,7 @@ cd /Users/roy/study/mlir/toy/Ch7
 ./build/toyc-ch7 ../../test_Example/Toy/Ch7/jit.toy -emit=jit
 ```
 
-Actual output **[16]**:
+Real output **[16]**:
 
 ```text
 1.000000 2.000000 
@@ -1962,7 +1931,7 @@ cd /Users/roy/study/mlir/toy/Ch7
 ./build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-codegen.toy -emit=jit
 ```
 
-Actual output **[17]** — `transpose(a) * transpose(a)` for `a = [[1, 2, 3], [4, 5, 6]]`, i.e. the element-wise square of the 3x2 transpose:
+Real output **[17]** (`transpose(a) * transpose(a)` for `a = [[1, 2, 3], [4, 5, 6]]`, i.e. the element-wise square of the 3x2 transpose):
 
 ```text
 1.000000 16.000000 
@@ -2006,7 +1975,9 @@ cd /Users/roy/study/mlir/toy/Ch7
 ./build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir -opt -mlir-print-ir-after-all 2>&1
 ```
 
-Actual output **[18]**, abridged. The dump has eight parts. The first three are `Canonicalizer` dumps from *inside* the inliner, which canonicalizes each callable it visits (section 8.1): `multiply_transpose` and `main` as they are in section 7.4, then `main` after `multiply_transpose` was inlined into it. That third dump is already identical to the body of the `Inliner` dump that follows, which is where this excerpt starts:
+The dump has eight parts. The first three are `Canonicalizer` dumps from *inside* the inliner, which canonicalizes each callable it visits (section 8.1): `multiply_transpose` and `main` as they are in section 7.4, then `main` after `multiply_transpose` was inlined into it. That third dump is already identical to the body of the `Inliner` dump that follows. The excerpt starts there.
+
+Real output **[18]** (abridged: it starts at the `Inliner` dump):
 
 ```mlir
 // -----// IR Dump After Inliner (inline) //----- //
@@ -2072,7 +2043,7 @@ cd /Users/roy/study/mlir/toy/Ch7
 ./build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-opt.mlir -emit=mlir -opt 2>&1
 ```
 
-Actual output **[19]**:
+Real output **[19]**:
 
 ```mlir
 module {
@@ -2094,7 +2065,7 @@ printf 'struct Inner {\n  var a;\n}\n\nstruct Outer {\n  Inner i;\n  var b;\n}\n
   | ./build/toyc-ch7 -emit=mlir 2>&1
 ```
 
-Actual output **[20]**:
+Real output **[20]**:
 
 ```mlir
 module {
@@ -2120,7 +2091,7 @@ printf 'struct S {\n  var a;\n  var b;\n}\n\ndef main() {\n  S s = {[1, 2]};\n  
   | ./build/toyc-ch7 -emit=mlir 2>&1
 ```
 
-Actual output **[21]** (exit status 1):
+Real output **[21]** (exit status 1):
 
 ```text
 loc("-":7:3): error: struct type of initializer is different than the variable declaration. Got '!toy.struct<tensor<*xf64>>', but expected '!toy.struct<tensor<*xf64>, tensor<*xf64>>'
@@ -2133,7 +2104,7 @@ cd /Users/roy/study/mlir/toy/Ch7
 printf 'struct S {\n  var a<2>;\n}\n' | ./build/toyc-ch7 -emit=mlir 2>&1
 ```
 
-Actual output **[22]** (exit status 1):
+Real output **[22]** (exit status 1):
 
 ```text
 loc("-":2:3): error: error: variables within a struct definition must not have initializers
@@ -2147,7 +2118,7 @@ printf 'struct S {\n  var a;\n}\n\ndef main() {\n  S s = {[1, 2]};\n  print(s.b)
   | ./build/toyc-ch7 -emit=mlir 2>&1
 ```
 
-Actual output **[23]** (exit status 0):
+Real output **[23]** (exit status 0):
 
 ```text
 loc("-":7:11): error: invalid access into struct expression
@@ -2175,7 +2146,7 @@ cd /Users/roy/study/mlir/toy/Ch7
   | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
 ```
 
-Actual output **[24]**:
+Real output **[24]**:
 
 ```mlir
 module {

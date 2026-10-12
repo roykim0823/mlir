@@ -1,6 +1,6 @@
 # Chapter 2: Emitting Basic MLIR
 
-> **Goal:** Define the *Toy dialect* and its operations in MLIR (mostly declaratively with ODS/TableGen), then walk the Chapter 1 AST and emit real MLIR from it — based on the official tutorial [Toy Ch-2: Emitting Basic MLIR](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-2/).
+> **Goal:** Define the *Toy dialect* and its operations in MLIR (mostly declaratively with ODS (Operation Definition Specification) and TableGen), then walk the Chapter 1 AST and emit real MLIR from it — based on the official tutorial [Toy Ch-2: Emitting Basic MLIR](https://mlir.llvm.org/docs/Tutorials/Toy/Ch-2/).
 
 ---
 
@@ -19,40 +19,6 @@ Why bother? Unlike LLVM IR's fixed, low-level instruction set, MLIR lets us defi
 The lexer, parser, and AST (`Lexer.h`, `Parser.h`, `AST.h`, `parser/AST.cpp`) are carried over unchanged from Chapter 1. Everything new is introduced in the section that explains it: the ODS definitions in `include/toy/Ops.td` (sections 3–4), the dialect implementation in `mlir/Dialect.cpp` (sections 3–4), the emitter in `mlir/MLIRGen.cpp` and the extended driver (section 5).
 
 Sections 1–7 follow the chapter's essential path. The appendices hold the reference material: the other eight ops (A), `Ops.td` as a whole, its generated code, and the hand-written `Dialect.cpp` (B), printing details and stock `mlir-opt` (C), more inputs (D), the build wiring (E), and the script that runs every command in this README (F).
-
-### Where Chapter 2 lives in this repo
-
-How this repo is organized — the out-of-tree CMake superbuild at `toy/`, the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers — is documented once in the top-level [README](../README.md#repository-layout). This chapter can also be built as a standalone project (section 6.1). Chapter 2 specifics:
-
-| Item | Location / value |
-|---|---|
-| Chapter 2 code | `/Users/roy/study/mlir/toy/Ch2/` |
-| Build | `cd toy && ./build.sh ch2` → binary at `./build/bin/toyc-ch2` |
-| Run | `cd toy && ./run.sh ch2` → `codegen.toy` with `-emit=mlir -mlir-print-debuginfo`, then a print → parse → print round trip |
-| Test inputs | `/Users/roy/study/mlir/test_Example/Toy/Ch2/` (`codegen.toy`, `scalar.toy`, `empty.toy`, `ast.toy`, `invalid.mlir`) |
-
-What changes relative to Chapter 1:
-
-```text
-Ch2/
-├── CMakeLists.txt          # + TableGen wiring, MLIRGen.cpp/Dialect.cpp, MLIR + LLVM link line (appendix E)
-├── toyc.cpp                # + -emit=mlir, .mlir input path, MLIR command-line options (section 5.6)
-├── run_mlir-tblgen.sh      # NEW: runs mlir-tblgen by hand into build/*.inc (section 6.4)
-├── examples.sh             # NEW: symlink to ../examples.sh, runs this README's commands (appendix F)
-├── mlir/
-│   ├── Dialect.cpp         # NEW: dialect initialize(), op verifiers, builders, parse/print (sections 3–4)
-│   └── MLIRGen.cpp         # NEW: AST → Toy dialect (section 5)
-├── parser/AST.cpp          # unchanged from Chapter 1
-└── include/
-    ├── CMakeLists.txt      # NEW: add_subdirectory(toy)
-    └── toy/
-        ├── CMakeLists.txt  # NEW: mlir_tablegen rules for Ops.td (appendix E)
-        ├── Ops.td          # NEW: the Toy dialect and its nine ops in ODS (sections 3.2, 4.3–4.5)
-        ├── Dialect.h       # NEW: includes the generated dialect and op declarations (section 3.3)
-        ├── MLIRGen.h       # NEW: the mlirGen() entry point (section 5)
-        ├── Ops/            # NEW: Ops0.td–Ops5.td, the walkthrough stages of section 4.4 (not built)
-        └── ...             # AST.h, Lexer.h, Parser.h unchanged
-```
 
 ---
 
@@ -80,7 +46,7 @@ Dissect a Toy operation in its *generic* textual form:
 
 | Piece | Meaning |
 |---|---|
-| `%t_tensor` | The name of the result defined by this operation. The `%` is a sigil that keeps value names from colliding with other identifiers. An operation defines zero or more results, which are SSA **values** (Toy limits itself to single-result ops). An op with several results names them together (`%res:2 = ...`) and uses them individually as `%res#0`, `%res#1`. The name is used during parsing but is **not persistent**: it is not tracked in the in-memory representation (section 2.4 shows `mlir-opt` renaming it). |
+| `%t_tensor` | The name of the result defined by this operation. The `%` is a sigil that keeps value names from colliding with other identifiers. An operation defines zero or more results, which are SSA (static single assignment) **values** (Toy limits itself to single-result ops). An op with several results names them together (`%res:2 = ...`) and uses them individually as `%res#0`, `%res#1`. The name is used during parsing but is **not persistent**: it is not tracked in the in-memory representation (section 2.4 shows `mlir-opt` renaming it). |
 | `"toy.transpose"` | The **operation name**: a unique string, the **dialect** namespace followed by `.` and the mnemonic — read it as "the `transpose` operation in the `toy` dialect". |
 | `(%tensor)` | A list of zero or more **operands** (arguments): SSA values defined by other operations or referring to block arguments. |
 | `{inplace = true}` | A dictionary of zero or more **attributes**: special operands that are always *constant*. Here, a boolean attribute named `inplace` with the value `true`. Attributes hold compile-time constant data; they are never SSA values. |
@@ -1416,7 +1382,7 @@ void ConstantOp::getEffects(::llvm::SmallVectorImpl<::mlir::SideEffects::EffectI
 }
 ```
 
-An empty effect list is how the rest of MLIR learns the op is side-effect free. It pays off in Chapter 3, where canonicalization and CSE start deleting and merging ops.
+An empty effect list is how the rest of MLIR learns the op is side-effect free. It pays off in Chapter 3, where canonicalization and CSE (common subexpression elimination) start deleting and merging ops.
 
 #### The finished `ConstantOp`: `Ops.td` vs the hand-written class
 
@@ -2266,7 +2232,7 @@ llvm::LogicalResult mlirGen(ExprASTList &blockAST) {
 - **`print`** generates the print. On failure, though, this branch returns `success()`, not `failure()`: the rest of the body is skipped, but the function is kept (section 5.5 shows the effect).
 - **Anything else** is an expression statement such as `noret(x);`. It goes to the expression dispatcher, and its value is dropped.
 
-**The expression dispatcher** switches on the node's kind, LLVM-style RTTI (`getKind()` plus `cast<>`, from Chapter 1's `AST.h`), and calls the matching overload:
+**The expression dispatcher** switches on the node's kind, LLVM-style RTTI (run-time type information) (`getKind()` plus `cast<>`, from Chapter 1's `AST.h`), and calls the matching overload:
 
 ***mlir/MLIRGen.cpp***
 ```cpp
@@ -2368,7 +2334,7 @@ mlir::Value mlirGen(BinaryExprAST &binop) {
 }
 ```
 
-Generating LHS, then RHS, then the op means every operand's defining op is created before the op that uses it, which is the order SSA requires. Each `create` appends at the insertion point, so the order of the C++ calls *is* the order of the ops in the block. In `transpose(a) * transpose(b)` the two `toy.transpose` ops come before `toy.mul`. The op's location is `binop.loc()`, which the parser sets at the start of the right-hand side (section 6.2's table: `*` gets `5:25`). Only `+` and `*` have ops; any other operator falls out of the `switch` into `emitError`.
+Generating the left-hand side (LHS), then the right-hand side (RHS), then the op means every operand's defining op is created before the op that uses it, which is the order SSA requires. Each `create` appends at the insertion point, so the order of the C++ calls *is* the order of the ops in the block. In `transpose(a) * transpose(b)` the two `toy.transpose` ops come before `toy.mul`. The op's location is `binop.loc()`, which the parser sets at the start of the right-hand side (section 6.2's table: `*` gets `5:25`). Only `+` and `*` have ops; any other operator falls out of the `switch` into `emitError`.
 
 **Variable references** are pure lookups:
 
@@ -4013,7 +3979,7 @@ Line by line: `LLVM_TARGET_DEFINITIONS` names the `.td` input; each `mlir_tableg
 
 ### E.2 Every later chapter repeats this pattern
 
-Chapters 3–7 all keep this exact structure — `include/toy/CMakeLists.txt` generating the op/dialect `.inc` files into a `ToyChNOpsIncGen` target, plus the explicit `add_dependencies` race guard — and each adds its own extra `.td` → generator pairs on top (DRR rewriters in Ch3, interfaces in Ch4). Their READMEs describe only those additions.
+Chapters 3–7 all keep this exact structure — `include/toy/CMakeLists.txt` generating the op/dialect `.inc` files into a `ToyChNOpsIncGen` target, plus the explicit `add_dependencies` race guard — and each adds its own extra `.td` → generator pairs on top (DRR (declarative rewrite rule) rewriters in Ch3, interfaces in Ch4). Their READMEs describe only those additions.
 
 ---
 

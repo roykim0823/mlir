@@ -9,7 +9,7 @@
 # The commands are read from README.md itself: every ```bash block, in order,
 # except the build block (its first command after cd is cmake) and file excerpts (a ***label*** line above
 # the fence). The README marks each block's output with the same number, e.g.
-# "Real output [7]:". Build the chapter first (README section "Building").
+# "Real output [7]:". Build the chapter first (standalone, see the top-level README).
 set -uo pipefail
 # This file lives in toy/; each chapter has a symlink ChN/examples.sh -> ../examples.sh.
 # $0 is the path it was invoked by, so cd'ing to its directory selects the chapter.

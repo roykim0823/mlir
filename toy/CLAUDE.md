@@ -50,8 +50,9 @@ spot, in this order:
 Group related runs under `####` headings inside one subsection (e.g. "#### A tool
 only understands the dialects it has loaded"). Input that isn't a repo file (an
 upstream snippet) goes on stdin via a quoted heredoc (`<<'EOF'`); a repo file that
-needs a tweak is piped through `sed`. Never add test files for this — the one
-exception is a step-by-step walkthrough's stage files (below). Run every command
+needs a tweak is piped through `sed`. Never add test files for this — the
+exceptions are a step-by-step walkthrough's stage files and alternative
+implementations (both below). Run every command
 exactly as written and compare it with the shown output (exit status included)
 before finishing.
 
@@ -68,9 +69,9 @@ numbers (they shift); it cites sections.
 
 ## Section order
 
-1. Overview (+ optionally a "Where Chapter N lives in this repo" table — its
-   `./build.sh chN` / `./run.sh chN` rows are the only mention of the superbuild
-   scripts)
+1. Overview, ending with one paragraph on what each appendix holds. No repo-layout
+   table or file tree: the top-level README covers the repo layout, the superbuild
+   and `build.sh`/`run.sh`, and the chapter README doesn't repeat them
 2. Concept and code sections, **in upstream's order**
 3. **Build and Run** — where upstream runs the complete example, normally its last
    section (upstream's "Complete Toy Example" / "running the tool" part maps here).
@@ -123,6 +124,18 @@ numbers (they shift); it cites sections.
   `Pure`). A behavior with two outcomes gets both runs (e.g. a verifier: one input
   that passes, one that fails). The real file's record and its full generated class
   come last, compared with the hand-written version.
+- To compare two ways of writing the same code (Ch3: DRR vs hand-written C++
+  patterns), the other way lives in **alternative implementations** under
+  `mlir/alt/<what>/`, which the build never reads. Each holds only the code that is
+  written differently, plus what it needs to be read on its own (e.g. a `.td`'s
+  `include`s), not a copy of the whole real file (Ch3:
+  `mlir/alt/drr_transpose/TransposeTranspose.td`). Show each alternative as a labeled
+  excerpt next to the real code it replaces, and explain the pieces side by side;
+  a one-line change to a real file (e.g. a registration) is shown as unlabeled
+  code, not kept as a file. Prove equivalence with one run that copies the chapter
+  to `$(mktemp -d)`, splices the alternative in (`cat >>`, `sed`, or an `#include`
+  swap), builds it, diffs its output (with `-mlir-print-debuginfo`) against the real
+  build's, and removes the copy (Ch3 section 3.7).
 
 Number sections consecutively; after moving anything, fix every cross-reference
 ("section X.Y", "§X", "(X.Y)", table cells) in the file. When renumbering with a
@@ -187,6 +200,16 @@ generated C++); other chapter-specific build-tooling notes go to the build appen
   READMEs often paraphrase code or add explanatory comments inside blocks; rebuild
   such blocks from the real line ranges and move the explanation into prose.
   Excerpts of class members may be dedented to top level.
+- **Callout markers** are the one thing an excerpt may add: when the prose explains a
+  long block piece by piece (several explanations, Ch3 3.2, 3.4, 3.7, 4.6, D.1),
+  append a `// (N)` marker (`# (N)` in CMake) to the lines it discusses, numbered
+  top to bottom, and lead each explanation with the matching bold **(N)**; a
+  numbered list may use its own numbers, and a comparison table cites the markers
+  in its cells. Align a block's markers in one column, two spaces past its longest
+  marked line. Mark only lines the prose explains. A real-output block (generated
+  code) may carry markers too, when its label says "`// (N)` markers added". Strip
+  the markers, with their padding, before comparing an excerpt with its source or
+  an output with the real run.
 - `Ops.td` `description = [{ ... }]` bodies often contain ```` ```mlir ```` fences,
   which break a surrounding markdown fence — elide the description body with `...`.
 - Hypothetical code (e.g. "what it would look like in raw C++") and snippets quoted
@@ -205,9 +228,39 @@ generated C++); other chapter-specific build-tooling notes go to the build appen
   whole file (the syntax table on real lines, a map of `Ops.td`, every op field it
   sets, the generated code). Later chapters refer back to these and explain only the
   `.td` constructs and fields they add (e.g. DRR in Ch3), in the same style.
+- Spell out each abbreviation at its first use in every chapter, even if an earlier
+  chapter already did: "CSE (common subexpression elimination)", "DCE (dead code
+  elimination)". Readers may start at any chapter. Skip terms every reader of this
+  tutorial knows (MLIR, LLVM, IR, AST, C++, API) or that are explained right where
+  they appear; prefer the plain words over a one-off abbreviation ("pass manager",
+  not "PM").
 - Build and Run comes after the code sections, so its references to them point
   back ("explained in section N"). Concept sections show their own real output
   using the scheme above rather than only pointing forward to Build and Run.
+
+## Insight sentences
+
+Add insight sentences wherever a section earns one. An insight sentence turns a
+concrete result into the design principle behind it, the "why it matters" a reader
+keeps after the details fade. The model is Ch3 3.1: after real runs show LLVM can't
+cancel two transpose loop nests while the Toy dialect matches them in one line, it
+ends with "This is the core argument for multi-level IR: **do each optimization at
+the abstraction level where it is cheap to express and trivially correct.**"
+
+- **Earn it.** Place it right after the run, comparison or code that shows the
+  specific case, never before it and never on its own. The sentence names the
+  general rule; the evidence above it makes the rule believable.
+- **One per point, in our own words.** One sentence (bold for the rule itself is
+  fine), at the end of the subsection or paragraph it closes. Don't stack several
+  or restate the same insight in later sections; point back to it instead.
+- **Concrete and true.** It must follow from what the README showed, in MLIR 20.
+  No hype ("powerful", "elegant"), no vague claims, and nothing the runs don't
+  support. Don't present it as a quote or attribute it to upstream; upstream's
+  own phrasing, when it has one, is just the starting point.
+- **Good places for one:** the end of a comparison (C++ vs DRR, hand-written vs
+  generated, registered vs unregistered), a run that shows a limit or a failure,
+  a design choice that seems arbitrary until explained, and Key Takeaways, which
+  collects them per chapter.
 
 ## Verify, don't copy
 

@@ -10,48 +10,13 @@ Chapters 2 and 3 produced Toy IR in which every user function is generic (`tenso
 
 1. Hook Toy into MLIR's built-in **inliner** through the `DialectInlinerInterface` and the `CallOpInterface`/`CallableOpInterface` op interfaces, adding a `toy.cast` op (with `CastOpInterface`) to bridge type mismatches at call boundaries.
 2. **Define a new op interface**, `ShapeInferenceOpInterface`, in TableGen, implement it on the Toy ops that need it, and write a generic `ShapeInferencePass` against it.
-3. Assemble the `-opt` pipeline: inline → shape inference → canonicalize → CSE.
+3. Assemble the `-opt` pipeline: inline → shape inference → canonicalize → CSE (common subexpression elimination: merge ops that compute the same value).
 
-The lexer, parser, AST, and the Chapter 3 DRR/C++ rewrite patterns (`mlir/ToyCombine.td`, `mlir/ToyCombine.cpp`) are carried over; the new pieces are introduced in the section that explains them.
+The lexer, parser, AST, and the Chapter 3 DRR (declarative rewrite rule) and C++ rewrite patterns (`mlir/ToyCombine.td`, `mlir/ToyCombine.cpp`) are carried over. New or changed: `mlir/MLIRGen.cpp` (private functions, section 4.1); `mlir/Dialect.cpp` (the inliner interface, `toy.cast`, the call conversion and `inferShapes()`: sections 4.1, 4.4, 4.5, 5.2); `include/toy/Ops.td` (sections 4.2, 4.4, 5.2); `include/toy/ShapeInferenceInterface.td` and `.h` (section 5.1); `mlir/ShapeInferencePass.cpp` and `include/toy/Passes.h` (section 5.3); `toyc.cpp` (the pipeline, sections 4.3 and 5.4).
 
 The appendices hold the extras: the `-opt` pipeline pass by pass (A), more inputs (B), what Chapter 4 adds to the build (C), and the script that runs every command in this README (D).
 
-### Where Chapter 4 lives in this repo
-
-How this repo is organized — the out-of-tree CMake superbuild at `toy/`, the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers — is documented once in the top-level [README](../README.md#repository-layout). This chapter also remains configurable as a standalone project (section 6.1). Chapter 4 specifics:
-
-| Item | Location / value |
-|---|---|
-| Chapter 4 code | `/Users/roy/study/mlir/toy/Ch4/` |
-| Build | `cd toy && ./build.sh ch4` → binary at `./build/bin/toyc-ch4` |
-| Run | `cd toy && ./run.sh ch4` → `./build/bin/toyc-ch4 ../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt` |
-| Test inputs | `/Users/roy/study/mlir/test_Example/Toy/Ch4/` (`codegen.toy`, `shape_inference.mlir`, `transpose_transpose.toy`, `trivial_reshape.toy`, `scalar.toy`, `ast.toy`, `empty.toy`, `invalid.mlir`) |
-
-Chapter 4's own files (new or changed relative to Chapter 3 are marked):
-
-```text
-Ch4/
-├── CMakeLists.txt                     # changed: + ShapeInferencePass.cpp, + interface IncGen dependency
-├── toyc.cpp                           # changed: -opt pipeline = inliner + nested shape inference/canonicalize/CSE
-├── parser/
-│   └── AST.cpp
-├── mlir/
-│   ├── Dialect.cpp                    # changed: ToyInlinerInterface, call-interface methods, CastOp, inferShapes()
-│   ├── MLIRGen.cpp                    # changed: non-main functions marked private
-│   ├── ShapeInferencePass.cpp         # new: the generic worklist pass
-│   ├── ToyCombine.cpp
-│   └── ToyCombine.td
-└── include/
-    ├── CMakeLists.txt
-    └── toy/
-        ├── AST.h  Lexer.h  Parser.h  MLIRGen.h
-        ├── CMakeLists.txt             # changed: + ShapeInferenceInterface.td → .inc rules
-        ├── Dialect.h                  # changed: + CastInterfaces.h, ShapeInferenceInterface.h
-        ├── Ops.td                     # changed: interfaces on ops, + toy.cast
-        ├── Passes.h                   # new: createShapeInferencePass()
-        ├── ShapeInferenceInterface.h  # new: wraps the generated interface declarations
-        └── ShapeInferenceInterface.td # new: the ShapeInferenceOpInterface definition
-```
+Building the chapter is covered once in the top-level [README](../README.md#build--run). Every command here is numbered by its output (**[1]**–**[21]**); after a standalone build, `./examples.sh` runs them all, `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix D).
 
 ---
 
@@ -59,7 +24,7 @@ Ch4/
 
 Through dialects, MLIR can represent many different levels of abstraction; the Toy dialect is one of them. Different as those abstractions are, there is a common set of transformations and analyses we want to run on all of them. Implementing each transformation separately for each dialect would duplicate large amounts of code, because the internal algorithms are generally the same. What we want is for transformations to hook *opaquely* into a dialect like Toy to get the information they need.
 
-MLIR does have some always-available hooks for core transformations — Chapter 3 registered canonicalization patterns through the `getCanonicalizationPatterns` hook on our ops (`let hasCanonicalizer = 1;`). But hooks of that kind don't scale: every dialect writing its own inliner (and constant folder, and CSE, and DCE...) would be an O(dialects × transformations) explosion. MLIR's more general answer is **interfaces**: a transformation is written once, generically, against an abstract interface; each dialect/operation *opts in* by implementing that interface. The pass never needs to know the dialect exists, and the dialect never needs to know how the pass works internally. Interfaces make the infrastructure as extensible as the representation.
+MLIR does have some always-available hooks for core transformations — Chapter 3 registered canonicalization patterns through the `getCanonicalizationPatterns` hook on our ops (`let hasCanonicalizer = 1;`). But a hook built into every op only covers transformations that core MLIR anticipated. Anything else would mean each dialect writing its own inliner, constant folder, CSE, DCE (dead code elimination) and so on: an O(dialects × transformations) explosion. MLIR's more general answer is **interfaces**: a transformation is written once, generically, against an abstract interface; each dialect/operation *opts in* by implementing that interface. The pass never needs to know the dialect exists, and the dialect never needs to know how the pass works internally.
 
 MLIR has two granularities of interface, and Chapter 4 uses both:
 
@@ -71,29 +36,84 @@ MLIR has two granularities of interface, and Chapter 4 uses both:
 The chapter demonstrates both directions:
 
 - **Consuming existing interfaces**: hooking Toy into MLIR's built-in **inliner** pass via `DialectInlinerInterface` + `CallOpInterface`/`CallableOpInterface` + `CastOpInterface` (section 4).
-- **Defining a new interface**: declaring `ShapeInferenceOpInterface` in ODS/TableGen and writing a generic `ShapeInferencePass` that works on *any* op implementing it — Toy ops today, anyone else's ops tomorrow (section 5).
+- **Defining a new interface**: declaring `ShapeInferenceOpInterface` in ODS (Operation Definition Specification) and TableGen, and writing a generic `ShapeInferencePass` that works on *any* op implementing it — Toy ops today, anyone else's ops tomorrow (section 5).
 
 ---
 
 ## 3. Shape Inference: Preparing for Code Generation
 
-Toy is intentionally "dumb" at the source level: user functions are **generic**. A function like
+**Shape inference** works out the concrete shape of every tensor value from the shapes of its operands, and rewrites its type accordingly. For example, transposing a `tensor<2x3xf64>` gives a `tensor<3x2xf64>`, and multiplying two `tensor<3x2xf64>` values element-wise gives a `tensor<3x2xf64>`. Starting from the shapes that are known, the constants, it fills in the rest, until no value is left with the unknown shape `tensor<*xf64>`. Code generation needs this: a loop over a tensor needs to know its size (Chapter 5). Section 5 implements it; this section explains what stands in the way.
+
+Toy is intentionally "dumb" at the source level: user functions are **generic**. The chapter's working example, `codegen.toy` (abridged: its `# CHECK:` lines are elided):
 
 ***test_Example/Toy/Ch4/codegen.toy***
 ```text
-...
+# RUN: toyc-ch4 %s -emit=mlir 2>&1 | FileCheck %s
+
+# User defined generic function that operates on unknown shaped arguments
 def multiply_transpose(a, b) {
   return transpose(a) * transpose(b);
+}
+
+def main() {
+  var a<2, 3> = [[1, 2, 3], [4, 5, 6]];
+  var b<2, 3> = [1, 2, 3, 4, 5, 6];
+  var c = multiply_transpose(a, b);
+  var d = multiply_transpose(b, a);
+  print(d);
 }
 ...
 ```
 
-says nothing about the shapes of `a` and `b`. When Chapter 2's MLIRGen lowers this to the Toy dialect, every argument and intermediate value gets the *unranked* tensor type `tensor<*xf64>` — "an f64 tensor of unknown rank and shape". Only `main`, where literals like `var a<2, 3> = ...` appear, has concrete `tensor<2x3xf64>` values; outside of constant initialization we don't know any shapes. So after codegen we have a module where:
+`multiply_transpose` says nothing about the shapes of `a` and `b`. When Chapter 2's MLIRGen lowers this to the Toy dialect, every argument and intermediate value gets the *unranked* tensor type `tensor<*xf64>` — "an f64 tensor of unknown rank and shape". Only `main`, where literals like `var a<2, 3> = ...` appear, has concrete `tensor<2x3xf64>` values; outside of constant initialization we don't know any shapes.
 
-- `multiply_transpose` computes entirely on `tensor<*xf64>`;
-- `main` calls it via `toy.generic_call` with statically shaped arguments but gets back a `tensor<*xf64>`.
+**What to watch for.** `a` and `b` hold the *same six values* shaped `<2,3>` (one from a nested literal, one reshaped from a flat literal), `c` is computed but **never used**, and only `d` is printed. Each of these details shows up in what the optimizer does to this file (section 5.4).
 
-That complicates optimization, and we cannot generate efficient code (or, in Chapter 5, lower to affine loops) without knowing the actual shapes. Within one function, shapes can simply be propagated through the computation until all of them are known. The hard part is calls to user-defined generic functions: every call site may deduce different shapes. There are three options:
+The driver's arguments, used throughout this README:
+
+- `../../test_Example/Toy/Ch4/codegen.toy` — the positional input file (shown above), relative to `Ch4/`. `-` reads from stdin (sections 4.1, 4.4 and appendix B).
+- `-emit=mlir` — dump the module after MLIRGen (and after the pipeline, if `-opt` is given). `-emit=ast` from Chapter 1 still works.
+- `-opt` — run the pass pipeline: inliner, then shape inference, canonicalizer and CSE (common subexpression elimination) on each `toy.func` (section 5.4). Without it you get the raw codegen output.
+- `--mlir-print-ir-after-all` — a generic pass-manager flag that dumps the IR after every pass (section 4.1, appendix A). It exists because `main()` calls `mlir::registerPassManagerCLOptions()` and the pipeline applies it via `applyPassManagerCLOptions(pm)`.
+- An input ending in `.mlir` (or any input with `-x mlir`) is parsed as MLIR instead of Toy source; `shape_inference.mlir` in section 4.1 and appendix B uses this.
+- `2>&1` — `module->dump()` and the pass-manager dumps write to **stderr**.
+
+The raw codegen, without `-opt`:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch4
+./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir 2>&1
+```
+
+Real output **[1]**:
+
+```mlir
+module {
+  toy.func private @multiply_transpose(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>) -> tensor<*xf64> {
+    %0 = toy.transpose(%arg0 : tensor<*xf64>) to tensor<*xf64>
+    %1 = toy.transpose(%arg1 : tensor<*xf64>) to tensor<*xf64>
+    %2 = toy.mul %0, %1 : tensor<*xf64>
+    toy.return %2 : tensor<*xf64>
+  }
+  toy.func @main() {
+    %0 = toy.constant dense<[[1.000000e+00, 2.000000e+00, 3.000000e+00], [4.000000e+00, 5.000000e+00, 6.000000e+00]]> : tensor<2x3xf64>
+    %1 = toy.reshape(%0 : tensor<2x3xf64>) to tensor<2x3xf64>
+    %2 = toy.constant dense<[1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00, 5.000000e+00, 6.000000e+00]> : tensor<6xf64>
+    %3 = toy.reshape(%2 : tensor<6xf64>) to tensor<2x3xf64>
+    %4 = toy.generic_call @multiply_transpose(%1, %3) : (tensor<2x3xf64>, tensor<2x3xf64>) -> tensor<*xf64>
+    %5 = toy.generic_call @multiply_transpose(%3, %1) : (tensor<2x3xf64>, tensor<2x3xf64>) -> tensor<*xf64>
+    toy.print %5 : tensor<*xf64>
+    toy.return
+  }
+}
+```
+
+- `@multiply_transpose` is fully **generic**: every type inside it is `tensor<*xf64>`, while both `toy.generic_call`s pass `tensor<2x3xf64>` operands.
+- The calls return **unranked** `tensor<*xf64>`: the shape information stops at the call boundary.
+- The callee is **`private`**, which matters for inlining (section 4.1).
+- No pass has run: the dead `%4` (variable `c`) and the redundant reshapes are still there.
+
+These unknown shapes complicate optimization, and we cannot generate efficient code (or, in Chapter 5, lower to affine loops) without knowing the actual shapes. Within one function, shapes can simply be propagated through the computation until all of them are known. The hard part is calls to user-defined generic functions: every call site may deduce different shapes. There are three options:
 
 1. **Symbolic inference** based on the argument types — hard to generalize once the language gains more control flow.
 2. **Function specialization** — clone the callee for every call site with new argument shapes and specialize the clone (what a production compiler might do).
@@ -130,18 +150,18 @@ struct ToyInlinerInterface : public DialectInlinerInterface {
   //===--------------------------------------------------------------------===//
 
   /// All call operations within toy can be inlined.
-  bool isLegalToInline(Operation *call, Operation *callable,
+  bool isLegalToInline(Operation *call, Operation *callable,                    // (1)
                        bool wouldBeCloned) const final {
     return true;
   }
 
   /// All operations within toy can be inlined.
-  bool isLegalToInline(Operation *, Region *, bool, IRMapping &) const final {
+  bool isLegalToInline(Operation *, Region *, bool, IRMapping &) const final {  // (2)
     return true;
   }
 
   // All functions within toy can be inlined.
-  bool isLegalToInline(Region *, Region *, bool, IRMapping &) const final {
+  bool isLegalToInline(Region *, Region *, bool, IRMapping &) const final {     // (3)
     return true;
   }
 
@@ -151,14 +171,14 @@ struct ToyInlinerInterface : public DialectInlinerInterface {
 
   /// Handle the given inlined terminator(toy.return) by replacing it with a new
   /// operation as necessary.
-  void handleTerminator(Operation *op, ValueRange valuesToRepl) const final {
+  void handleTerminator(Operation *op, ValueRange valuesToRepl) const final {   // (4)
     // Only "toy.return" needs to be handled here.
     auto returnOp = cast<ReturnOp>(op);
 
     // Replace the values directly with the return operands.
     assert(returnOp.getNumOperands() == valuesToRepl.size());
     for (const auto &it : llvm::enumerate(returnOp.getOperands()))
-      valuesToRepl[it.index()].replaceAllUsesWith(it.value());
+      valuesToRepl[it.index()].replaceAllUsesWith(it.value());                  // (5)
   }
   ...
 };
@@ -166,16 +186,14 @@ struct ToyInlinerInterface : public DialectInlinerInterface {
 
 What each hook means:
 
-- **Three `isLegalToInline` overloads** — the inliner asks progressively finer-grained questions:
-  - *(call, callable, wouldBeCloned)*: may this particular call to this particular callable be inlined at all? `wouldBeCloned` is `true` if the callee body would be *copied* (other uses remain) rather than moved.
-  - *(Operation, Region, ...)*: may this specific operation be moved into the destination region? The `IRMapping` maps callee values to their caller-side replacements.
-  - *(Region, Region, ...)*: may the source region as a whole (the callee's body) be inlined into the destination region?
+- **Three `isLegalToInline` overloads**, one per level the inliner asks about (the numbers match the `// (N)` markers in the code):
+  - **(1)** *(call, callable, wouldBeCloned)*: may this particular call to this particular callable be inlined at all? `wouldBeCloned` is `true` if the callee body would be *copied* (other uses remain) rather than moved.
+  - **(2)** *(Operation, Region, ...)*: may this specific operation be moved into the destination region? The `IRMapping` maps callee values to their caller-side replacements.
+  - **(3)** *(Region, Region, ...)*: may the source region as a whole (the callee's body) be inlined into the destination region?
 
-  Toy has no side-effectful, region-sensitive, or otherwise inlining-hostile operations, so all three return `true` unconditionally. A real dialect would inspect the operands/attributes here (e.g. refuse to inline ops that depend on function-scoped state).
+  Splicing a Toy function body into its caller keeps every op's meaning and order, side effects included (`toy.print`), so all three return `true` unconditionally. A real dialect would inspect the operands/attributes here (e.g. refuse to inline ops that depend on function-scoped state).
 
-- **`handleTerminator`** — after the callee's block is spliced into the caller, the callee's terminator (`toy.return %2`) must disappear; whatever it returned must become the value(s) that the original `toy.generic_call` produced. `valuesToRepl` are exactly those call results, so we RAUW each one with the corresponding return operand. The inliner then erases the terminator. (This is the single-block overload; a second overload taking a `Block *newDest` exists for callees with several blocks, which Toy never produces.)
-
-In MLIR 20 the virtual in `mlir/Transforms/InliningUtils.h` takes the values to replace as a `ValueRange`; an override with a different parameter type is not an override, so `final` makes clang reject it.
+- **(4), (5) `handleTerminator`** — after the callee's block is spliced into the caller, the callee's terminator (such as `toy.return %2` in the example below) must disappear; whatever it returned must become the value(s) that the original `toy.generic_call` produced. `valuesToRepl` (a `ValueRange`) are exactly those call results, so each one has all its uses replaced with the corresponding return operand (RAUW, replace-all-uses-with). The inliner then erases the terminator. (This is the single-block overload; a second overload taking a `Block *newDest` exists for callees with several blocks, which Toy never produces.)
 
 **Private visibility for non-`main` functions.** The inliner only discards unused function definitions whose symbol visibility is **private**; a public symbol might be referenced from outside the module. So `mlir/MLIRGen.cpp` (the only change to that file relative to Chapter 3) marks every function except `main` private:
 
@@ -186,7 +204,7 @@ In MLIR 20 the virtual in `mlir/Transforms/InliningUtils.h` takes the values to 
       function.setPrivate();
 ```
 
-This is why the raw codegen prints `toy.func private @multiply_transpose(...)` (section 4.3). Without it, inlining still happens, but the now-dead public `@multiply_transpose` stays in the module — and because it is still generic, this chapter's shape-inference pass (section 5) then fails on it. The test input `shape_inference.mlir` is the raw codegen of `codegen.toy` written out as MLIR; dropping its `private` keyword with `sed` shows the failure without rebuilding anything (abridged: the `// RUN:`/`// CHECK:` lines and `main` are elided):
+This is why the raw codegen prints `toy.func private @multiply_transpose(...)` (section 3). The test input `shape_inference.mlir` is that raw codegen of `codegen.toy`, written out as MLIR:
 
 ***test_Example/Toy/Ch4/shape_inference.mlir***
 ```mlir
@@ -203,32 +221,33 @@ toy.func @main() {
 ...
 ```
 
+Run the `-opt` pipeline on it twice, as generated and with `private` removed by `sed`, and look at the IR right after the inliner. `-x mlir` makes `toyc-ch4` parse its input as MLIR (`-` is standard input), and `--mlir-print-ir-after-all` prints the IR after each pass:
+
 ```bash
 cd /Users/roy/study/mlir/toy/Ch4
+echo "== as generated: multiply_transpose is private"
+./build/toyc-ch4 ../../test_Example/Toy/Ch4/shape_inference.mlir -x mlir -emit=mlir -opt --mlir-print-ir-after-all 2>&1 \
+  | sed -n '/IR Dump After Inliner/,/^}/p' | grep -E 'toy.func|generic_call'
+echo "== with private removed"
 sed 's/toy.func private/toy.func/' ../../test_Example/Toy/Ch4/shape_inference.mlir \
-  | ./build/toyc-ch4 - -x mlir -emit=mlir -opt
+  | ./build/toyc-ch4 - -x mlir -emit=mlir -opt --mlir-print-ir-after-all 2>&1 \
+  | sed -n '/IR Dump After Inliner/,/^}/p' | grep -E 'toy.func|generic_call'
 ```
 
-Real output **[1]** (exit status 4):
+Real output **[2]**:
 
 ```text
-<stdin>:5:1: error: Shape inference failed, 3 operations couldn't be inferred
-
-toy.func @multiply_transpose(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>) -> tensor<*xf64> {
-^
-<stdin>:5:1: note: see current operation: 
-"toy.func"() <{function_type = (tensor<*xf64>, tensor<*xf64>) -> tensor<*xf64>, sym_name = "multiply_transpose"}> ({
-^bb0(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>):
-  %0 = "toy.transpose"(%arg0) : (tensor<*xf64>) -> tensor<*xf64>
-  %1 = "toy.transpose"(%arg1) : (tensor<*xf64>) -> tensor<*xf64>
-  %2 = "toy.mul"(%0, %1) : (tensor<*xf64>, tensor<*xf64>) -> tensor<*xf64>
-  "toy.return"(%2) : (tensor<*xf64>) -> ()
-}) : () -> ()
+== as generated: multiply_transpose is private
+  toy.func @main() {
+== with private removed
+  toy.func @multiply_transpose(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>) -> tensor<*xf64> {
+  toy.func @main() {
 ```
 
-- `main` is fine: both calls were inlined into it. The error is about the public `@multiply_transpose`, which the inliner had to keep.
-- The shape-inference pass runs on every `toy.func` (section 5.4), including this one. Nothing inside it has a ranked operand, so none of its three ops (two transposes and the mul) ever becomes ready, and the pass reports them (section 5.3).
-- Exit status 4 is `dumpMLIR()` returning 4 when `pm.run` fails.
+- **Both calls were inlined either way**: no `toy.generic_call` is left in `main`.
+- **Only the private function was deleted.** The public `@multiply_transpose` stays, although nothing calls it any more: the inliner can't rule out a caller outside the module. Being still generic, it later makes shape inference fail (section 5.3).
+
+Generic passes act only on what the IR states: **visibility, not the absence of callers, decides whether a function may be deleted.**
 
 **Registering the interface on the dialect.** The dialect interface is registered in `ToyDialect::initialize()`, next to the ops, right below the struct in `Dialect.cpp`:
 
@@ -245,7 +264,7 @@ void ToyDialect::initialize() {
 }
 ```
 
-`addInterfaces<ToyInlinerInterface>()` is what attaches the interface to the dialect; without it the inliner finds no inliner interface for Toy ops and leaves every call alone.
+`addInterfaces<ToyInlinerInterface>()` is what attaches the interface to the dialect. Without it the inliner finds no inliner interface for Toy ops, so it gets no permission to inline them and leaves every call alone, as when the interface's answers are missing in section 4.3.
 
 ### 4.2 Marking calls and callables — `CallOpInterface` / `CallableOpInterface`
 
@@ -260,19 +279,19 @@ In `include/toy/Ops.td` the interface definitions are included and the interface
 ```tablegen
 include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/IR/SymbolInterfaces.td"
-include "mlir/Interfaces/CallInterfaces.td"
+include "mlir/Interfaces/CallInterfaces.td"             // (1)
 include "mlir/Interfaces/CastInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "toy/ShapeInferenceInterface.td"
 ...
 def FuncOp : Toy_Op<"func", [
-    FunctionOpInterface, IsolatedFromAbove
+    FunctionOpInterface, IsolatedFromAbove              // (2)
   ]> {
   ...
   let arguments = (ins
     SymbolNameAttr:$sym_name,
     TypeAttrOf<FunctionType>:$function_type,
-    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,             // (3)
     OptionalAttr<DictArrayAttr>:$res_attrs
   );
   let regions = (region AnyRegion:$body);
@@ -288,20 +307,20 @@ def FuncOp : Toy_Op<"func", [
     /// Returns the result types of this function.
     ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
 
-    Region *getCallableRegion() { return &getBody(); }
+    Region *getCallableRegion() { return &getBody(); }  // (4)
   }];
   ...
 }
 ...
 def GenericCallOp : Toy_Op<"generic_call",
-    [DeclareOpInterfaceMethods<CallOpInterface>]> {
+    [DeclareOpInterfaceMethods<CallOpInterface>]> {     // (5)
   ...
   // The generic call operation takes a symbol reference attribute as the
   // callee, and inputs for the call.
   let arguments = (ins
     FlatSymbolRefAttr:$callee,
     Variadic<F64Tensor>:$inputs,
-    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,             // (6)
     OptionalAttr<DictArrayAttr>:$res_attrs
   );
 
@@ -311,11 +330,12 @@ def GenericCallOp : Toy_Op<"generic_call",
 }
 ```
 
-Notes on the ODS side:
+Notes on the ODS side; the numbers match the `// (N)` markers:
 
-- `DeclareOpInterfaceMethods<CallOpInterface>` is the key ODS construct: it attaches the interface **and** declares its methods that have no default implementation on the generated C++ op class, leaving their bodies for us to write in `Dialect.cpp`. (Listing the bare interface instead would attach it without declaring those methods.)
-- **`toy.func` gets `CallableOpInterface` through `FunctionOpInterface`**, which implies it together with `Symbol`; its callable methods are written inline in `FuncOp`'s `extraClassDeclaration`: `getCallableRegion()` returns the region the inliner should clone from — the function body — and `getArgumentTypes()`/`getResultTypes()` expose the signature.
-- `arg_attrs` / `res_attrs`: on `FuncOp` they are the optional ODS arguments that `FunctionOpInterface` expects (its description in `mlir/Interfaces/FunctionInterfaces.td` lists them), and `FuncOp::parse`/`print` in `Dialect.cpp` pass `getArgAttrsAttrName()`/`getResAttrsAttrName()` to the function-op helpers. On `GenericCallOp` they are optional extras: MLIR 20's `CallOpInterface` has no argument/result-attribute methods, so nothing in this chapter reads them.
+- **(1) `include "mlir/Interfaces/CallInterfaces.td"`** brings in the ODS definitions of both `CallOpInterface` and `CallableOpInterface`. An interface has to be included before an op's trait list can name it; the other includes do the same for the function, symbol, cast, side-effect and shape-inference interfaces.
+- **(2), (4) `toy.func` gets `CallableOpInterface` through `FunctionOpInterface`**, which implies it together with `Symbol` and brings the function parse/print helpers `FuncOp` already uses; its callable methods are written inline in `FuncOp`'s `extraClassDeclaration`: `getCallableRegion()` returns the region the inliner should clone from — the function body — and `getArgumentTypes()`/`getResultTypes()` expose the signature.
+- **(3), (6) `arg_attrs` / `res_attrs`** are optional per-argument and per-result attributes. `FunctionOpInterface` expects them on `FuncOp`; on `GenericCallOp` nothing in this chapter reads them.
+- **(5) `DeclareOpInterfaceMethods<CallOpInterface>`** is the key ODS construct: it attaches the interface **and** declares its methods that have no default implementation on the generated C++ op class, leaving their bodies for us to write in `Dialect.cpp`. (Listing the bare interface instead would attach it without declaring those methods.)
 
 The `CallOpInterface` implementations for `GenericCallOp` in `Dialect.cpp`:
 
@@ -344,11 +364,11 @@ MutableOperandRange GenericCallOp::getArgOperandsMutable() {
 }
 ```
 
-- `getCallableForCallee()` returns a `CallInterfaceCallable` — either an SSA value (indirect call) or, as here, a `SymbolRefAttr` naming the callee. The inliner resolves the symbol to the `toy.func` in the module's symbol table (the interface's default `resolveCallable` does this).
-- `setCalleeFromCallable()` lets transformations retarget the call.
+- `getCallableForCallee()` returns a `CallInterfaceCallable` — either an SSA (static single assignment) value (indirect call) or, as here, a `SymbolRefAttr` naming the callee. The inliner resolves the symbol to the `toy.func` in the module's symbol table (the interface's default `resolveCallable` does this).
+- `setCalleeFromCallable()` lets a transformation retarget the call, for example a pass that replaces the callee with a specialized copy.
 - `getArgOperands()` / `getArgOperandsMutable()` tell the inliner which operands map to the callee's block arguments.
 
-Three MLIR 20 details show in these bodies: the op class doesn't forward `getAttrOfType`, so the call goes through the `Operation *` (`(*this)->`); ODS accessors are `get`-prefixed (`getInputs()`); and `getArgOperandsMutable()` has no default in MLIR 20's `CallOpInterface`, so it must be defined.
+`getArgOperandsMutable()` has no default implementation in `CallOpInterface`, so it must be defined; the op class doesn't provide `getAttrOfType`, so `getCallableForCallee()` goes through the `Operation *` (`(*this)->`).
 
 ### 4.3 Adding the inliner pass — and the hidden type conversion
 
@@ -362,42 +382,11 @@ With policy, discovery, and registration in place, enabling inlining is one line
 
 The inliner is a *module*-level pass: it builds the call graph from `CallOpInterface`/`CallableOpInterface`, inlines bottom-up, runs a simplification pipeline on the functions it visits, and erases now-unreferenced private functions. Section 5.4 shows the rest of the pipeline around it.
 
-**The working example.** The running example is `codegen.toy` (section 3 shows its generic function; section 6.2 shows the whole file). Its `main` calls `multiply_transpose` twice, and never uses `c`:
+**The working example.** The running example is `codegen.toy`; section 3 shows the file and its raw codegen. Its `main` calls `multiply_transpose` twice and never uses `c`; the calls pass `tensor<2x3xf64>` operands to a callee whose arguments are `tensor<*xf64>`, and the callee is `private` (section 4.1).
 
-***test_Example/Toy/Ch4/codegen.toy***
-```toy
-def main() {
-  var a<2, 3> = [[1, 2, 3], [4, 5, 6]];
-  var b<2, 3> = [1, 2, 3, 4, 5, 6];
-  var c = multiply_transpose(a, b);
-  var d = multiply_transpose(b, a);
-  print(d);
-}
-```
+**The hidden type conversion.** With only the pieces so far in place, the calls are not inlined. The missing piece is a hidden type conversion on the edge of the call. The `toy.generic_call` operands are `tensor<2x3xf64>`, while the callee's arguments expect `tensor<*xf64>`. If the inliner blindly wired caller SSA values into the callee body, operand types would silently change and the IR might not even verify. Instead the inliner expects the dialect to materialize an **explicit cast** for each mismatched argument or result (the `materializeCallConversion` hook, section 4.5); if it can't get one, it declines to inline that call.
 
-The raw codegen, without `-opt`, filtered to the function headers and the calls (section 6.2 shows the whole dump):
-
-```bash
-cd /Users/roy/study/mlir/toy/Ch4
-./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir 2>&1 | grep -E 'toy.func|generic_call'
-```
-
-Real output **[2]**:
-
-```mlir
-  toy.func private @multiply_transpose(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>) -> tensor<*xf64> {
-  toy.func @main() {
-    %4 = toy.generic_call @multiply_transpose(%1, %3) : (tensor<2x3xf64>, tensor<2x3xf64>) -> tensor<*xf64>
-    %5 = toy.generic_call @multiply_transpose(%3, %1) : (tensor<2x3xf64>, tensor<2x3xf64>) -> tensor<*xf64>
-```
-
-- The callee's arguments are `tensor<*xf64>`, while both calls pass `tensor<2x3xf64>` operands.
-- The calls return `tensor<*xf64>`: the shape information stops at the call boundary.
-- The callee is `private` (section 4.1).
-
-**The hidden type conversion.** With only the pieces so far in place, *nothing changes*: the calls are not inlined. The missing piece is a hidden type conversion on the edge of the call. The `toy.generic_call` operands are `tensor<2x3xf64>`, while the callee's arguments expect `tensor<*xf64>`. If the inliner blindly wired caller SSA values into the callee body, operand types would silently change and the IR might not even verify. Instead the inliner expects the dialect to materialize an **explicit cast** for each mismatched argument (the `materializeCallConversion` hook, section 4.5); if it can't get one, it declines to inline that call.
-
-To see it, build a scratch copy of the chapter whose hook returns `nullptr` — the command copies the sources to a temporary directory, patches `Dialect.cpp` with `sed`, builds the copy (about 10 seconds), and prints the IR right after the inliner:
+To see it, build a scratch copy of the chapter in which the hook can't make a cast: the command copies the sources to a temporary directory, uses `sed` to change the hook's `return builder.create<CastOp>(...)` line (section 4.5 shows the hook) into `return nullptr;`, builds the copy (about 10 seconds), and runs it with `-opt`. It prints the exit status, the IR right after the inliner, and the errors:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch4
@@ -405,14 +394,16 @@ S=$(mktemp -d)
 cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
 sed -i '' 's/return builder.create<CastOp>(conversionLoc, resultType, input);/return nullptr;/' "$S"/mlir/Dialect.cpp
 cmake -S "$S" -B "$S"/build -G Ninja >/dev/null && cmake --build "$S"/build >/dev/null
-"$S"/build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt --mlir-print-ir-after-all 2>&1 \
-  | sed -n '/After Inliner/,/^}/p'
+"$S"/build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt --mlir-print-ir-after-all > "$S"/out.txt 2>&1; echo "toyc-ch4 exit status: $?"
+sed -n '/After Inliner/,/^}/p' "$S"/out.txt
+grep 'error:' "$S"/out.txt
 rm -rf "$S"
 ```
 
 Real output **[3]**:
 
-```mlir
+```text
+toyc-ch4 exit status: 4
 // -----// IR Dump After Inliner (inline) //----- //
 module {
   toy.func private @multiply_transpose(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>) -> tensor<*xf64> {
@@ -430,11 +421,13 @@ module {
     toy.return
   }
 }
+../../test_Example/Toy/Ch4/codegen.toy:4:1: error: Shape inference failed, 3 operations couldn't be inferred
+../../test_Example/Toy/Ch4/codegen.toy:11:11: error: unable to infer shape of operation without shape inference interface
 ```
 
 - Both `toy.generic_call`s and the callee `@multiply_transpose` are still there: without a cast, the inliner left every call alone.
-- The inliner still ran its canonicalization on each function (section 4.5), so the reshapes are gone.
-- The full `-opt` pipeline then fails in the shape-inference pass, with the two errors that section 5.3 reproduces without a scratch build.
+- The reshapes are gone even so. The inliner runs the canonicalizer on every function it visits, as part of its *simplification pipeline*, whether or not it inlines anything; the Chapter 3 reshape patterns removed them.
+- The pipeline then fails in the shape-inference pass (exit status 4) with the two errors at the end: the generic function's three ops never get shapes, and a `toy.generic_call` has no shape-inference rule. Section 5.3 explains both.
 
 ### 4.4 `toy.cast` and `CastOpInterface`
 
@@ -464,9 +457,9 @@ def CastOp : Toy_Op<"cast", [
 }
 ```
 
-Trait/interface breakdown:
+What each trait and interface gives `toy.cast`:
 
-- **`CastOpInterface`** marks the op as a cast-like op and provides generic utilities for it: a verifier (`impl::verifyCastInterfaceOp`) and a fold hook that removes identity casts (`impl::foldCastInterfaceOp`), both wired in by `mlir/Interfaces/CastInterfaces.td`. We hook into the interface by defining its one required method, `areCastCompatible` (below).
+- **`CastOpInterface`** marks the op as a cast-like op and provides generic utilities for it: a verifier (`impl::verifyCastInterfaceOp`) and a fold hook that removes identity casts (`impl::foldCastInterfaceOp`), both wired in by `mlir/Interfaces/CastInterfaces.td` (included at the top of `Ops.td`, section 4.2). We hook into the interface by defining its one required method, `areCastCompatible` (below).
 - **`Pure`** — no side effects; dead casts can be removed.
 - **`SameOperandsAndResultShape`** — if both sides *are* ranked, shapes must agree.
 - It also declares **`ShapeInferenceOpInterface`**: after inlining, the casts are exactly the ops through which static shapes must flow (section 5.2).
@@ -492,8 +485,6 @@ bool CastOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
   return !input.hasRank() || !output.hasRank() || input == output;
 }
 ```
-
-The cast uses the free function `llvm::dyn_cast<TensorType>(...)`: MLIR 20 deprecates the member form `Type::dyn_cast` (`'dyn_cast' is deprecated: Use mlir::dyn_cast<U>() instead`).
 
 `toy.cast` can be written by hand and fed to `toyc-ch4` on stdin (`-` plus `-x mlir`). Without `-opt` the tool only parses, verifies, and prints. Rank erasure (`tensor<2x3xf64>` to `tensor<*xf64>`) and rank refinement (the reverse) both verify:
 
@@ -604,7 +595,9 @@ module {
 
 - **One `toy.cast` per inlined argument**: `%2` and `%3` are the casts `materializeCallConversion` built, from the caller's `tensor<2x3xf64>` to the callee's `tensor<*xf64>`. The inlined body (`%4`–`%6`) still computes on `tensor<*xf64>`; making it ranked is section 5's job.
 - **`@multiply_transpose` is gone**: it was private and has no uses left (section 4.1).
-- **The inliner also simplifies**, so the result is cleaner than a literal splice: its `default-pipeline` option (default `"canonicalize"`, in `mlir/Transforms/Passes.td`) runs the canonicalizer on each function it visits. That is why the two reshapes are already gone, `b`'s flat constant has become a second `tensor<2x3xf64>` constant (`%1`), and the ops of the unused call `c = multiply_transpose(a, b)` have been erased. Appendix A shows those nested canonicalizer runs.
+- **The inliner also simplifies**, so the result is cleaner than a literal splice: its simplification pipeline (section 4.3) is set by its `default-pipeline` option, `"canonicalize"` by default (`mlir/Transforms/Passes.td`). That is why the two reshapes are already gone, `b`'s flat constant has become a second `tensor<2x3xf64>` constant (`%1`), and the ops of the unused call `c = multiply_transpose(a, b)` have been erased. Appendix A shows those nested canonicalizer runs.
+
+Compare this run with section 4.3's scratch build: the same generic inliner, given a cast here and refused one there. **A generic pass never guesses a dialect's semantics: it asks through an interface, and if the interface can't answer, it leaves the IR alone.** That is how interfaces make the infrastructure as extensible as the representation.
 
 ---
 
@@ -638,12 +631,101 @@ def ShapeInferenceOpInterface : OpInterface<"ShapeInference"> {
 #endif // SHAPE_INFERENCE_INTERFACE
 ```
 
-Anatomy:
+Its parts:
 
 - `OpInterface<"ShapeInference">` — the TableGen def name (`ShapeInferenceOpInterface`) is what you reference in other `.td` files; the string `"ShapeInference"` is the name of the **generated C++ class** (`mlir::toy::ShapeInference`) that passes will `dyn_cast` to.
 - `InterfaceMethod<description, returnType, methodName>` — declares one method, `void inferShapes()`, from a description, a C++ return type as a string, and a method name as a string. `InterfaceMethod` can also take an argument list, a method body, and a default implementation; here the simplest form suffices.
 
-`mlir-tblgen` turns this into two generated files (see appendix C): `ShapeInferenceOpInterfaces.h.inc` (the `ShapeInference` class declaration) and `ShapeInferenceOpInterfaces.cpp.inc` (its concept/model machinery). They are pulled into the build by two hand-written files. The declarations go into a small header, which `Dialect.h` includes:
+`mlir-tblgen` turns this into two generated files (appendix C has the build rules). The declarations, `-gen-op-interface-decls` (`ShapeInferenceOpInterfaces.h.inc`):
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch4
+mlir-tblgen -gen-op-interface-decls include/toy/ShapeInferenceInterface.td -I include -I /opt/homebrew/opt/llvm@20/include | sed -n '10,$p'
+```
+
+Real output **[7]** (with `// (N)` markers added for the list below):
+
+```cpp
+namespace detail {
+struct ShapeInferenceInterfaceTraits {
+  struct Concept {
+    /// The methods defined by the interface.
+    void (*inferShapes)(const Concept *impl, ::mlir::Operation *);                                          // (1)
+  };
+  template<typename ConcreteOp>
+  class Model : public Concept {                                                                            // (2)
+  public:
+    using Interface = ShapeInference;
+    Model() : Concept{inferShapes} {}
+
+    static inline void inferShapes(const Concept *impl, ::mlir::Operation *tablegen_opaque_val);
+  };
+  template<typename ConcreteOp>
+  class FallbackModel : public Concept {                                                                    // (3)
+  public:
+    using Interface = ShapeInference;
+    FallbackModel() : Concept{inferShapes} {}
+
+    static inline void inferShapes(const Concept *impl, ::mlir::Operation *tablegen_opaque_val);
+  };
+  template<typename ConcreteModel, typename ConcreteOp>
+  class ExternalModel : public FallbackModel<ConcreteModel> {
+  public:
+    using ConcreteEntity = ConcreteOp;
+  };
+};
+template <typename ConcreteOp>
+struct ShapeInferenceTrait;
+
+} // namespace detail
+class ShapeInference : public ::mlir::OpInterface<ShapeInference, detail::ShapeInferenceInterfaceTraits> {  // (4)
+public:
+  using ::mlir::OpInterface<ShapeInference, detail::ShapeInferenceInterfaceTraits>::OpInterface;
+  template <typename ConcreteOp>
+  struct Trait : public detail::ShapeInferenceTrait<ConcreteOp> {};
+  /// Infer and set the output shape for the current operation.
+  void inferShapes();                                                                                       // (5)
+};
+namespace detail {
+  template <typename ConcreteOp>
+  struct ShapeInferenceTrait : public ::mlir::OpInterface<ShapeInference, detail::ShapeInferenceInterfaceTraits>::Trait<ConcreteOp> {
+  };
+}// namespace detail
+template<typename ConcreteOp>
+void detail::ShapeInferenceInterfaceTraits::Model<ConcreteOp>::inferShapes(const Concept *impl, ::mlir::Operation *tablegen_opaque_val) {
+  return (llvm::cast<ConcreteOp>(tablegen_opaque_val)).inferShapes();                                       // (6)
+}
+template<typename ConcreteOp>
+void detail::ShapeInferenceInterfaceTraits::FallbackModel<ConcreteOp>::inferShapes(const Concept *impl, ::mlir::Operation *tablegen_opaque_val) {
+  return static_cast<const ConcreteOp *>(impl)->inferShapes(tablegen_opaque_val);
+}
+```
+
+The interface is *type-erased*: a pass holds a `ShapeInference`, never a `TransposeOp`, yet the call reaches `TransposeOp::inferShapes()`. The pieces, by marker:
+
+- **(1) `Concept`** is a table of function pointers, one per interface method; here a single `inferShapes` entry taking the op as a plain `Operation *`.
+- **(2) `Model<ConcreteOp>`** fills that table for one op class. MLIR builds one per op class that declares the interface (section 5.2) and stores it with the op's registration.
+- **(6)** Each `Model` entry casts the `Operation *` back to the concrete op and calls its `inferShapes()`: the code each op writes in section 5.2.
+- **(3) `FallbackModel`** and `ExternalModel` are for attaching the interface to an op from outside its definition, for example to an op of another dialect; Toy doesn't use them.
+- **(4) `ShapeInference`** is the class passes use. It wraps an `Operation *`, so `dyn_cast<ShapeInference>(op)` works on any op and returns null when the op's class has no model.
+- **(5) `inferShapes()`** is declared here and defined in the second generated file, `-gen-op-interface-defs` (`ShapeInferenceOpInterfaces.cpp.inc`):
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch4
+mlir-tblgen -gen-op-interface-defs include/toy/ShapeInferenceInterface.td -I include -I /opt/homebrew/opt/llvm@20/include | sed -n '10,$p'
+```
+
+Real output **[8]**:
+
+```cpp
+void ShapeInference::inferShapes() {
+      return getImpl()->inferShapes(getImpl(), getOperation());
+  }
+```
+
+It looks up the op's model (`getImpl()`) and calls the model's function pointer (1). This one dispatch is why an interface can be attached to ops from unrelated dialects without a common C++ base class.
+
+The two generated files are pulled into the build by two hand-written files. The declarations go into a small header, which `Dialect.h` includes:
 
 ***include/toy/ShapeInferenceInterface.h***
 ```cpp
@@ -660,8 +742,6 @@ namespace toy {
 ```
 
 and the `.cpp.inc` is included once in `ShapeInferencePass.cpp` (section 5.3).
-
-Internally MLIR uses a *concept-based polymorphism* model (type erasure): the generated `ShapeInference` class wraps an `Operation*` plus a vtable-like "model" per registered op class. This is why an interface can be attached to ops from unrelated dialects without a common C++ base class, and why `dyn_cast<ShapeInference>(op)` works on a raw `Operation*`.
 
 ### 5.2 Attaching the interface and implementing `inferShapes()`
 
@@ -694,7 +774,24 @@ def TransposeOp : Toy_Op<"transpose",
 }
 ```
 
-`DeclareOpInterfaceMethods<ShapeInferenceOpInterface>` adds a `void inferShapes();` declaration to each generated op class; we provide the definitions in `Dialect.cpp`. Ops that don't need inference don't participate: `toy.constant` and `toy.reshape` already produce statically shaped results by construction (`StaticShapeTensorOf<[F64]>` for reshape), `toy.print`/`toy.return` have no results, and `toy.generic_call` no longer exists after inlining.
+`DeclareOpInterfaceMethods<ShapeInferenceOpInterface>` adds a `void inferShapes();` declaration to each generated op class that lists it. The generated classes that have one:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch4
+mlir-tblgen -gen-op-decls include/toy/Ops.td -I include -I /opt/homebrew/opt/llvm@20/include \
+  | grep -E '^class [A-Za-z]+ : |void inferShapes\(\);' | grep -B1 'void inferShapes' | grep -o '^class [A-Za-z]*'
+```
+
+Real output **[9]**:
+
+```text
+class AddOp
+class CastOp
+class MulOp
+class TransposeOp
+```
+
+The first `grep` keeps each class header and each `inferShapes` declaration, and the second keeps the header right before each declaration. We provide the four definitions in `Dialect.cpp`. Ops that don't need inference don't participate: `toy.constant` and `toy.reshape` already produce statically shaped results by construction (`StaticShapeTensorOf<[F64]>` for reshape), `toy.print`/`toy.return` have no results, and `toy.generic_call` no longer exists after inlining.
 
 **Implementing `inferShapes()` per op.** Each of these ops now needs a definition of `inferShapes()`. All four are small, and each *refines the result type in place* from the (already-ranked) operand types. They are spread over the per-op sections of `Dialect.cpp` (abridged):
 
@@ -719,12 +816,13 @@ void TransposeOp::inferShapes() {
 }
 ```
 
-Points worth noticing:
+How the two pieces fit together:
 
 - `AddOp` and `MulOp` are element-wise, so the result takes the (left) operand's type; `TransposeOp` reverses the input dimensions.
 - `CastOp::inferShapes()` sets the result type equal to the input type — turning `toy.cast %1 : tensor<2x3xf64> to tensor<*xf64>` into the identity cast `tensor<2x3xf64> to tensor<2x3xf64>`. That is what makes the cast *foldable* later: the `CastOpInterface` fold hook (section 4.4) removes same-type casts when the canonicalizer runs. Section 5.3 shows the identity casts after the pass, and appendix A the `Canonicalizer` dump that follows, with the casts gone.
 - `TransposeOp::inferShapes()` may safely `cast<RankedTensorType>` because the pass only calls `inferShapes()` once **all** operands are ranked (see the `allOperandsInferred` gate in section 5.3).
-- Mutating result types in place is fine *within* a function here because every consumer of these values is itself either shape-inference-capable or shape-agnostic (`toy.print` accepts any `F64Tensor`); `ReturnOp::verify()` in `Dialect.cpp` also deliberately tolerates unranked/ranked mismatches against the function signature.
+- **Changing result types in place is safe here.** Every user of these values either infers its own shape or accepts any `F64Tensor` (`toy.print`).
+- **`toy.return` tolerates the change too.** `ReturnOp::verify()` in `Dialect.cpp` accepts an operand that is ranked where the function's result type is unranked, or the other way round.
 
 ### 5.3 The `ShapeInferencePass` — a generic worklist algorithm
 
@@ -761,7 +859,7 @@ namespace {
 ///
 struct ShapeInferencePass
     : public mlir::PassWrapper<ShapeInferencePass, OperationPass<toy::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ShapeInferencePass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ShapeInferencePass)   // (1)
   StringRef getArgument() const override { return "toy-shape-inference"; }
 
   void runOnOperation() override {
@@ -771,7 +869,7 @@ struct ShapeInferencePass
     // these are operations that return a dynamic shape.
     llvm::SmallPtrSet<mlir::Operation *, 16> opWorklist;
     f.walk([&](mlir::Operation *op) {
-      if (returnsDynamicShape(op))
+      if (returnsDynamicShape(op))                                   // (2)
         opWorklist.insert(op);
     });
 
@@ -780,7 +878,7 @@ struct ShapeInferencePass
     while (!opWorklist.empty()) {
       // Find the next operation ready for inference, that is an operation
       // with all operands already resolved (non-generic).
-      auto nextop = llvm::find_if(opWorklist, allOperandsInferred);
+      auto nextop = llvm::find_if(opWorklist, allOperandsInferred);  // (3)
       if (nextop == opWorklist.end())
         break;
 
@@ -789,7 +887,7 @@ struct ShapeInferencePass
 
       // Ask the operation to infer its output shapes.
       LLVM_DEBUG(llvm::dbgs() << "Inferring shape for: " << *op << "\n");
-      if (auto shapeOp = dyn_cast<ShapeInference>(op)) {
+      if (auto shapeOp = dyn_cast<ShapeInference>(op)) {             // (4)
         shapeOp.inferShapes();
       } else {
         op->emitError("unable to infer shape of operation without shape "
@@ -800,7 +898,7 @@ struct ShapeInferencePass
 
     // If the operation worklist isn't empty, this indicates a failure.
     if (!opWorklist.empty()) {
-      f.emitError("Shape inference failed, ")
+      f.emitError("Shape inference failed, ")                        // (5)
           << opWorklist.size() << " operations couldn't be inferred\n";
       signalPassFailure();
     }
@@ -830,13 +928,13 @@ std::unique_ptr<mlir::Pass> mlir::toy::createShapeInferencePass() {
 }
 ```
 
-Walk through the design (the algorithm is the one in the comment above):
+How the code implements the algorithm in its comment; the numbers match the `// (N)` markers:
 
-- **Worklist seeding** (`returnsDynamicShape`): any op with at least one non-`RankedTensorType` result needs inference. After inlining, that's the two `toy.cast`s, the two `toy.transpose`s, and the `toy.mul`.
-- **Readiness test** (`allOperandsInferred`): an op can only be inferred once *all* of its operands are ranked. Initially only the casts qualify (their inputs are `toy.constant` results, already `tensor<2x3xf64>`). Inferring the casts makes the transposes ready; inferring those makes the mul ready. Shapes thus flow forward through use-def chains — a classic dataflow fixpoint, here implemented with a simple "find any ready op" scan since Toy IR is small and acyclic.
-- **The interface dispatch** is the whole point of the chapter: `dyn_cast<ShapeInference>(op)` asks "does this op — whatever dialect it belongs to — implement the interface?" The pass never mentions `AddOp`, `MulOp`, etc. If an op needs inference but doesn't implement the interface, that's a hard error.
-- **Failure detection**: if the loop stalls (no ready op) with work remaining, shapes couldn't be fully resolved — e.g. a `toy.generic_call` survived because inlining didn't run first. The pass reports and fails (run below).
-- **`MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID`** gives the pass an explicit `TypeID`. `mlir/Support/TypeID.h` says the implicit, name-based fallback must not be used for classes in anonymous namespaces.
+- **(1) `MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID`** gives the pass an explicit `TypeID`. `mlir/Support/TypeID.h` says the implicit, name-based fallback must not be used for classes in anonymous namespaces.
+- **(2) Worklist seeding** (`returnsDynamicShape`): any op with at least one non-`RankedTensorType` result needs inference. After inlining, that's the two `toy.cast`s, the two `toy.transpose`s, and the `toy.mul`.
+- **(3) Readiness test** (`allOperandsInferred`): an op can only be inferred once *all* of its operands are ranked. Initially only the casts qualify (their inputs are `toy.constant` results, already `tensor<2x3xf64>`). Inferring the casts makes the transposes ready; inferring those makes the mul ready. Shapes thus flow forward through use-def chains Each round takes any ready op, in no particular order (the worklist is a `SmallPtrSet`), until none is left.
+- **(4) The interface dispatch** is the whole point of the chapter: `dyn_cast<ShapeInference>(op)` asks "does this op — whatever dialect it belongs to — implement the interface?" The pass never mentions `AddOp`, `MulOp`, etc. If an op needs inference but doesn't implement the interface, that's a hard error.
+- **(5) Failure detection**: if the loop stalls (no ready op) with work remaining, shapes couldn't be fully resolved — for example in the body of a function that wasn't inlined, whose arguments stay unranked. The pass reports and fails (run below).
 
 The factory is declared in `include/toy/Passes.h`, which `toyc.cpp` includes; it lives in namespace `mlir::toy`:
 
@@ -861,7 +959,7 @@ cd /Users/roy/study/mlir/toy/Ch4
   | sed -n '/ShapeInferencePass/,/^}/p'
 ```
 
-Real output **[7]**:
+Real output **[10]**:
 
 ```mlir
 // -----// IR Dump After (anonymous namespace)::ShapeInferencePass (toy-shape-inference) //----- //
@@ -884,7 +982,7 @@ toy.func @main() {
 
 #### When inference fails
 
-A call the inliner leaves in place defeats the pass. A self-recursive function is one: the inliner doesn't inline calls to it, so both the call in `main` and the one inside `@f` survive. The input is not a repo file, so it goes on stdin:
+A call the inliner leaves in place defeats the pass. A self-recursive function is one: the inliner skips calls to a function that calls itself, so both the call in `main` and the one inside `@f` survive. The input is not a repo file, so it goes on stdin:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch4
@@ -902,7 +1000,7 @@ toy.func @main() {
 EOF
 ```
 
-Real output **[8]** (exit status 4):
+Real output **[11]** (exit status 4):
 
 ```text
 <stdin>:1:1: error: Shape inference failed, 1 operations couldn't be inferred
@@ -925,7 +1023,7 @@ The two errors are the pass's two failure paths:
 
 - **In `@f`, the worklist stalls.** The call's only operand is the unranked `%arg0`, so `allOperandsInferred` never holds. The loop breaks with the op still in the worklist, and the pass reports `f.emitError("Shape inference failed, ") << opWorklist.size() << ...` on the function.
 - **In `main`, the dispatch fails.** The call's operand `%0` is ranked, so the call is ready, but `dyn_cast<ShapeInference>(op)` returns null: `toy.generic_call` doesn't implement the interface. The pass reports `op->emitError("unable to infer shape ...")` on the op.
-- The scratch build of section 4.3, whose `materializeCallConversion` returns `nullptr`, fails the same two ways on `codegen.toy`.
+- Section 4.3's scratch build, whose `materializeCallConversion` returns `nullptr`, shows the same two errors on `codegen.toy`.
 
 #### Debug output needs an assertions-enabled LLVM
 
@@ -936,14 +1034,14 @@ cd /Users/roy/study/mlir/toy/Ch4
 ./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt -debug-only=shape-inference
 ```
 
-Real output **[9]** (exit status 1):
+Real output **[12]** (exit status 1):
 
 ```text
 toyc-ch4: Unknown command line argument '-debug-only=shape-inference'.  Try: './build/toyc-ch4 --help'
 toyc-ch4: Did you mean '--debug-pass=shape-inference'?
 ```
 
-The suggested `--debug-pass` is an unrelated LLVM option.
+The `--debug-pass` option it suggests is an unrelated LLVM option, not a replacement.
 
 ### 5.4 Adding the pass: the complete `-opt` pipeline
 
@@ -974,11 +1072,11 @@ The pass is added to the pass manager in this repo's `toyc.cpp` (`dumpMLIR()`), 
 
 Order matters, and each step enables the next:
 
-1. **`createInlinerPass()`** (module scope) — must run first. Shape inference is *intraprocedural*; it cannot see through `toy.generic_call`. Inlining brings the callee bodies to where the concrete shapes live and inserts `toy.cast` bridges. It also deletes the now-unused `private` functions.
+1. **`createInlinerPass()`** (module scope) — must run first. Shape inference is *intraprocedural*; it cannot see through `toy.generic_call`. Inlining brings the callee bodies to where the concrete shapes live and inserts `toy.cast` bridges (section 4.5).
 2. **`pm.nest<toy::FuncOp>()`** — the remaining passes are *function*-level, so they are nested to run on every `toy.func` inside the module (in parallel, in principle). The nesting must be on **`toy::FuncOp`**: the pass manager anchors on the exact op type, and the shape-inference pass is restricted to `toy.func` (run below).
 3. **`createShapeInferencePass()`** — the worklist algorithm from section 5.3 replaces every `tensor<*xf64>` with a ranked type and turns the casts into identities.
-4. **`createCanonicalizerPass()`** — now the Chapter 3 patterns plus the `CastOpInterface` fold clean up: identity `toy.cast`s vanish, and any transpose/reshape simplifications fire *with full shape knowledge*. Running it before shape inference would miss the cast folds (a cast to `tensor<*xf64>` is not an identity yet).
-5. **`createCSEPass()`** — after canonicalization the two constants are structurally identical; CSE merges them, which makes the two transposes identical as well, shrinking `main` to one constant, one transpose, one mul.
+4. **`createCanonicalizerPass()`** — now the Chapter 3 patterns plus the `CastOpInterface` fold clean up: identity `toy.cast`s vanish. Before shape inference the casts aren't identities yet (`tensor<2x3xf64>` to `tensor<*xf64>`), so the fold, which only removes same-type casts (section 4.4), couldn't touch them.
+5. **`createCSEPass()`** — common subexpression elimination. When two ops have the same name, operands, attributes and result types, CSE keeps the first and replaces every use of the second with it. It merges only ops whose side effects allow it — for Toy, the `Pure` ones; two `toy.print`s are never merged. The canonicalizer can't do this: its patterns rewrite one op from its operands, while CSE compares independent ops. Here, after canonicalization the two constants are structurally identical; CSE merges them, which makes the two transposes identical as well, shrinking `main` to one constant, one transpose, one mul.
 
 **The pass must be nested.** Adding it to the module-level pass manager instead (`pm.addPass(...)` in place of `optPM.addPass(...)`) aborts while the pipeline is being built. A scratch copy with that one-line change shows it:
 
@@ -988,17 +1086,18 @@ S=$(mktemp -d)
 cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
 sed -i '' 's/optPM.addPass(mlir::toy::createShapeInferencePass());/pm.addPass(mlir::toy::createShapeInferencePass());/' "$S"/toyc.cpp
 cmake -S "$S" -B "$S"/build -G Ninja >/dev/null && cmake --build "$S"/build >/dev/null
-"$S"/build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt 2>&1
+"$S"/build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt 2>&1; echo "toyc-ch4 exit status: $?"
 rm -rf "$S"
 ```
 
-Real output **[10]** (abridged — the shell's own `Abort trap: 6` report, which carries a process ID, is left out):
+Real output **[13]** (abridged — the shell's own `Abort trap: 6` report, which carries a process ID, is left out):
 
 ```text
 LLVM ERROR: Can't add pass '(anonymous namespace)::ShapeInferencePass' restricted to 'toy.func' on a PassManager intended to run on 'builtin.module', did you intend to nest?
+toyc-ch4 exit status: 134
 ```
 
-`toyc-ch4` aborts (`SIGABRT`) before any pass runs; the block's own exit status is that of the final `rm`.
+`toyc-ch4` aborts (`SIGABRT`, exit status 134) before any pass runs.
 
 Rerunning the original example with the whole pipeline:
 
@@ -1007,116 +1106,7 @@ cd /Users/roy/study/mlir/toy/Ch4
 ./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt 2>&1
 ```
 
-Real output **[11]** (abridged: `toy.print` and `toy.return` are elided; section 6.2 shows it whole):
-
-```mlir
-module {
-  toy.func @main() {
-    %0 = toy.constant dense<[[1.000000e+00, 2.000000e+00, 3.000000e+00], [4.000000e+00, 5.000000e+00, 6.000000e+00]]> : tensor<2x3xf64>
-    %1 = toy.transpose(%0 : tensor<2x3xf64>) to tensor<3x2xf64>
-    %2 = toy.mul %1, %1 : tensor<3x2xf64>
-    ...
-  }
-}
-```
-
-- Compared with the shape-inference output in section 5.3, step 4 removed the identity casts and step 5 merged the constants and then the transposes: `toy.mul %1, %1` multiplies one transpose by itself.
-- Appendix A shows the IR after each of these steps.
-
----
-
-## 6. Build and Run
-
-The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 4 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — the interface TableGen step — is in appendix C.
-
-Every command in this README is numbered by its output (**[1]**–**[20]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix D).
-
-### 6.1 Building
-
-```bash
-cd /Users/roy/study/mlir/toy/Ch4
-cmake -S . -B build -G Ninja
-cmake --build build          # → ./build/toyc-ch4
-```
-
-No preset applies at the chapter level, yet no toolchain flags are needed, because the shell environment already points at Homebrew LLVM 20:
-
-- `CXX=/opt/homebrew/opt/llvm@20/bin/clang++` (and `CC`) selects the compiler.
-- `/opt/homebrew/opt/llvm@20/bin` is on `PATH`, and `find_package` also searches the prefix above each `PATH` entry, so it finds `/opt/homebrew/opt/llvm@20/lib/cmake/{mlir,llvm}` by itself.
-
-In a shell without that setup, pass them explicitly: `-DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++`.
-
-Three TableGen targets now run before the C++ compiles: the Chapter 2 op/dialect `.inc` files, the Chapter 3 DRR rewriters (`build/ToyCombine.inc`), and — new here — the shape-inference interface (`build/include/toy/ShapeInferenceOpInterfaces.{h,cpp}.inc`). A standalone build puts the binary directly in `build/`; the superbuild's `toy/build/bin/toyc-ch4` behaves identically.
-
-### 6.2 Running
-
-**The input**, `codegen.toy` (abridged: its `# CHECK:` lines are elided):
-
-***test_Example/Toy/Ch4/codegen.toy***
-```text
-# RUN: toyc-ch4 %s -emit=mlir 2>&1 | FileCheck %s
-
-# User defined generic function that operates on unknown shaped arguments
-def multiply_transpose(a, b) {
-  return transpose(a) * transpose(b);
-}
-
-def main() {
-  var a<2, 3> = [[1, 2, 3], [4, 5, 6]];
-  var b<2, 3> = [1, 2, 3, 4, 5, 6];
-  var c = multiply_transpose(a, b);
-  var d = multiply_transpose(b, a);
-  print(d);
-}
-...
-```
-
-Note: `a` and `b` hold the *same six values* shaped `<2,3>` (one from a nested literal, one reshaped from a flat literal), `c` is computed but **never used**, and only `d` is printed. Each of these details is visible in what the optimizer does below.
-
-Without `-opt`, the raw codegen:
-
-```bash
-cd /Users/roy/study/mlir/toy/Ch4
-./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir 2>&1
-```
-
-Real output **[12]**:
-
-```mlir
-module {
-  toy.func private @multiply_transpose(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>) -> tensor<*xf64> {
-    %0 = toy.transpose(%arg0 : tensor<*xf64>) to tensor<*xf64>
-    %1 = toy.transpose(%arg1 : tensor<*xf64>) to tensor<*xf64>
-    %2 = toy.mul %0, %1 : tensor<*xf64>
-    toy.return %2 : tensor<*xf64>
-  }
-  toy.func @main() {
-    %0 = toy.constant dense<[[1.000000e+00, 2.000000e+00, 3.000000e+00], [4.000000e+00, 5.000000e+00, 6.000000e+00]]> : tensor<2x3xf64>
-    %1 = toy.reshape(%0 : tensor<2x3xf64>) to tensor<2x3xf64>
-    %2 = toy.constant dense<[1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00, 5.000000e+00, 6.000000e+00]> : tensor<6xf64>
-    %3 = toy.reshape(%2 : tensor<6xf64>) to tensor<2x3xf64>
-    %4 = toy.generic_call @multiply_transpose(%1, %3) : (tensor<2x3xf64>, tensor<2x3xf64>) -> tensor<*xf64>
-    %5 = toy.generic_call @multiply_transpose(%3, %1) : (tensor<2x3xf64>, tensor<2x3xf64>) -> tensor<*xf64>
-    toy.print %5 : tensor<*xf64>
-    toy.return
-  }
-}
-```
-
-What to observe:
-
-- `@multiply_transpose` is **`private`** (the `setPrivate()` call in `MLIRGen.cpp`, section 4.1) and fully **generic**: every type inside it is `tensor<*xf64>`.
-- Both `toy.generic_call`s pass ranked `tensor<2x3xf64>` arguments but produce **unranked** `tensor<*xf64>` results — the shape information dies at the call boundary (section 4.3).
-- The dead `%4` (variable `c`) and the redundant reshapes are still present — no optimization has run.
-
-With `-opt` — inlined, shape-inferred, canonicalized, CSE'd:
-
-```bash
-cd /Users/roy/study/mlir/toy/Ch4
-./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt 2>&1
-```
-
-Real output **[13]**:
+Real output **[14]**:
 
 ```mlir
 module {
@@ -1130,55 +1120,57 @@ module {
 }
 ```
 
-- `../../test_Example/Toy/Ch4/codegen.toy` — the positional input file (shown below), relative to `Ch4/`. `-` reads from stdin (section 4.4 and appendix B).
-- `-emit=mlir` — dump the module after MLIRGen (and after the pipeline, if `-opt` is given). `-emit=ast` from Chapter 1 still works.
-- `-opt` — run the pass pipeline: inliner, then shape inference, canonicalizer and CSE on each `toy.func` (explained in section 5.4). Without it you get the raw codegen output.
-- `--mlir-print-ir-after-all` — a generic pass-manager flag that dumps the IR after every pass (appendix A). It exists because `main()` calls `mlir::registerPassManagerCLOptions()` and the pipeline applies it via `applyPassManagerCLOptions(pm)`.
-- An input ending in `.mlir` (or any input with `-x mlir`) is parsed as MLIR instead of Toy source; `shape_inference.mlir` in appendix B uses this.
-- `2>&1` — `module->dump()` and the pass-manager dumps write to **stderr**.
+- Compared with the shape-inference output in section 5.3, step 4 removed the identity casts and step 5 merged the constants and then the transposes: `toy.mul %1, %1` multiplies one transpose by itself.
+- Appendix A shows the IR after each of these steps.
 
-Everything this chapter built is visible in the diff:
+Everything this chapter built is visible in the difference from the raw codegen in section 3:
 
-| Before (`-emit=mlir`) | After (`-emit=mlir -opt`) | Which mechanism |
+| Before (`-emit=mlir`, section 3) | After (`-emit=mlir -opt`) | Which mechanism |
 |---|---|---|
 | `toy.func private @multiply_transpose` exists | **gone** — dead after inlining | inliner + private visibility (section 4.1) |
 | two `toy.generic_call` ops | **gone** — bodies spliced into `main` | `CallOpInterface`/`CallableOpInterface` (section 4.2) |
 | `tensor<*xf64>` everywhere in the callee | every type ranked: `tensor<2x3xf64>`, `tensor<3x2xf64>` | `ShapeInferenceOpInterface` + pass (section 5) |
 | (transiently) `toy.cast ... to tensor<*xf64>` after inlining | **gone** — inferred to identity, folded | `toy.cast` + `materializeCallConversion` + canonicalizer (sections 4.4, 4.5, 5.2) |
-| unused call `%4` (variable `c`), redundant reshapes | **gone** | canonicalizer / DCE on `Pure` ops |
-| two identical constants, two identical transposes | **one** constant, **one** transpose, `toy.mul %1, %1` | CSE (section 5.4) |
+| unused call `%4` (variable `c`), redundant reshapes | **gone** | the inliner's canonicalizer: Chapter 3 reshape patterns, and dead `Pure` ops erased once the call is inlined (sections 4.3, 4.5) |
+| two identical constants, two identical transposes | **one** constant, **one** transpose, `toy.mul %1, %1` | CSE (step 5 above) |
 
-## 7. Key Takeaways & Pitfalls
+Each pass leaves the IR valid and simpler for the next: **the inliner makes the type change explicit as a cast, shape inference turns the cast into an identity, and the canonicalizer folds it away.**
+
+---
+
+## 6. Key Takeaways & Pitfalls
 
 **Takeaways**
 
-1. **Interfaces invert the dependency.** The inliner never learned about Toy; Toy taught itself to the inliner. This is the core scaling trick of MLIR: transformations are O(1) per new dialect, not O(dialects).
+1. **Interfaces invert the dependency.** The inliner never learned about Toy; Toy taught itself to the inliner. This is MLIR's scaling trick: each pass is written once and each dialect implements a few interfaces, so the work grows as dialects + transformations, not dialects × transformations (section 2).
 2. **Dialect interfaces vs. op interfaces.** Use a *dialect* interface for blanket policy (`ToyInlinerInterface`: "everything is inlinable", terminator handling, cast materialization); use *op* interfaces for per-op capabilities (`CallOpInterface`, `ShapeInferenceOpInterface`).
 3. **`DeclareOpInterfaceMethods<...>` is the ODS glue.** It both attaches the interface and declares the methods on the generated op class so you implement them in your `.cpp` — declare them and forget a body, and you get a link error (section 4.2).
 4. **Casts make type refinement safe.** Rather than mutating types across a call boundary, the inliner asks the dialect to materialize explicit `toy.cast`s; shape inference later proves them trivial and the canonicalizer deletes them. Explicit-then-fold is a recurring MLIR idiom.
 5. **A custom interface is ~15 lines of TableGen.** `OpInterface` + `InterfaceMethod` + two `mlir_tablegen` invocations gives you a `dyn_cast`-able C++ class usable across dialects.
-6. **Pipeline order encodes the reasoning**: inline (bring shapes to the code) → infer (propagate them) → canonicalize (exploit them) → CSE (deduplicate what canonicalization exposed).
+6. **Pipeline order encodes the reasoning**: inline (bring shapes to the code) → infer (propagate them) → canonicalize (exploit them) → CSE (deduplicate what canonicalization exposed); each pass leaves the IR ready for the next (section 5.4).
 
 **Pitfalls**
 
-- **Forgetting `addInterfaces<ToyInlinerInterface>()`** in `ToyDialect::initialize()`, or returning `nullptr` from `materializeCallConversion` — the inliner quietly leaves every `toy.generic_call` in place; the first visible symptom is the shape-inference pass failing, with `Shape inference failed, 3 operations couldn't be inferred` on the still-generic callee and `unable to infer shape of operation without shape inference interface` on a leftover call (sections 4.3, 5.3).
+- **Forgetting `addInterfaces<ToyInlinerInterface>()`** in `ToyDialect::initialize()`, or returning `nullptr` from `materializeCallConversion` — the inliner quietly leaves every `toy.generic_call` in place; the first visible symptom is the shape-inference pass failing, as in section 4.3's scratch build (section 5.3 explains the two errors).
 - **Forgetting `setPrivate()`** on non-`main` functions — inlining still happens, but the dead public `@multiply_transpose` is kept, and since it is still generic, `-opt` fails with `Shape inference failed, 3 operations couldn't be inferred` on it (run in section 4.1).
 - **`pm.addPass(createShapeInferencePass())` at module level** — the pass is restricted to `toy.func`, so adding it to the module pass manager aborts with `LLVM ERROR: Can't add pass ... restricted to 'toy.func' ...` before anything runs (section 5.4).
 - **Running shape inference without inlining first**: `toy.generic_call` produces `tensor<*xf64>` and does not implement `ShapeInference`, so the pass hard-fails ("unable to infer shape of operation without shape inference interface"; section 5.3).
-- **`inferShapes()` ordering assumptions**: implementations like `TransposeOp::inferShapes()` `cast<RankedTensorType>` unconditionally — safe only because the pass gates on `allOperandsInferred`. Calling one outside that discipline trips the cast assertion (in an assertions-enabled build).
+- **`inferShapes()` ordering assumptions**: implementations like `TransposeOp::inferShapes()` `cast<RankedTensorType>` unconditionally — safe only because the pass gates on `allOperandsInferred`. Called on an op whose operand is still unranked, the `cast` would be wrong; this release build has no assertions to catch it.
 - **Reading `--mlir-print-ir-after-all` output**: the first dumps are the inliner's *nested* canonicalization runs, not the inliner itself; the `Inliner (inline)` dump comes after them (appendix A).
-- **Out-of-tree specifics**: this project links the monolithic `MLIR`/`LLVM` dylibs (appendix C). Also keep `add_dependencies(toyc-ch4 ToyCh4ShapeInferenceInterfaceIncGen)`: it guarantees the interface `.inc` files are generated before `Dialect.cpp` and `ShapeInferencePass.cpp`, which include them, are compiled.
+- **Dropping `add_dependencies(toyc-ch4 ToyCh4ShapeInferenceInterfaceIncGen)`** can make the build compile `Dialect.cpp` or `ShapeInferencePass.cpp` before the interface `.inc` files they include exist (appendix C.1).
 
 ---
 
 ## Appendix A: The `-opt` pipeline pass by pass
+
+This extends section 5.4: the IR after every pass of the `-opt` pipeline, including the canonicalizer runs nested inside the inliner (section 4.3). Sections 4.5 and 5.3 showed the inliner and shape-inference dumps on their own.
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch4
 ./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir -opt --mlir-print-ir-after-all 2>&1
 ```
 
-Actual output **[14]** (abridged: the final `module { ... }` dump, identical to section 6.2, is omitted):
+Real output **[15]** (abridged: the final `module { ... }` dump, identical to section 5.4, is omitted):
 
 ```mlir
 // -----// IR Dump After Canonicalizer (canonicalize) //----- //
@@ -1271,20 +1263,20 @@ Reading the dumps in order:
 5. **`Canonicalizer`** — the identity casts are folded away (sections 4.4, 5.2).
 6. **`CSE`** — the duplicate constant is merged, which makes the two transposes identical, so they are merged too, leaving `toy.mul %1, %1`.
 
-**The ecosystem view.** The parenthesized names in the dump headers — `(inline)`, `(canonicalize)`, `(cse)` — are the *registered pass names*, and three of the four passes in this chapter's pipeline are stock MLIR passes, the same ones any `mlir-opt`-family tool exposes as `--inline`, `--canonicalize`, `--cse`. Only `(toy-shape-inference)` is chapter-local. `toyc-ch4 -opt` is therefore a hardcoded version of the pipeline `builtin.module(inline, toy.func(toy-shape-inference, canonicalize, cse))` inside a binary that links the Toy dialect and its one custom pass — which is how real MLIR projects structure their `foo-opt` tools.
+**The ecosystem view.** The parenthesized names in the dump headers — `(inline)`, `(canonicalize)`, `(cse)` — are the *registered pass names*, and three of the four passes in this chapter's pipeline are stock MLIR passes, the same ones any `mlir-opt`-family tool exposes as `--inline`, `--canonicalize`, `--cse`. Only `(toy-shape-inference)` is chapter-local. `toyc-ch4 -opt` is therefore a hardcoded version of the pipeline that `--pass-pipeline` syntax would write as `builtin.module(inline, toy.func(toy-shape-inference, canonicalize, cse))` inside a binary that links the Toy dialect and its one custom pass.
 
 ---
 
 ## Appendix B: More inputs
 
-`test_Example/Toy/Ch4/` also contains `shape_inference.mlir` — the raw codegen module of section 6.2 written out as MLIR, so it exercises the pipeline without the Toy frontend. The `.mlir` extension alone selects the MLIR parser path in `loadMLIR()`:
+`test_Example/Toy/Ch4/` also contains `shape_inference.mlir` — the raw codegen module of section 3 written out as MLIR, so it exercises the pipeline without the Toy frontend. The `.mlir` extension alone selects the MLIR parser path in `loadMLIR()`:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch4
 ./build/toyc-ch4 ../../test_Example/Toy/Ch4/shape_inference.mlir -emit=mlir -opt 2>&1
 ```
 
-Actual output **[15]** — the same module as section 6.2:
+Real output **[16]** (the same module as section 5.4):
 
 ```mlir
 module {
@@ -1298,14 +1290,14 @@ module {
 }
 ```
 
-The Chapter 3 inputs now go through the inliner first:
+In `transpose_transpose.toy` the `transpose(transpose(x))` sits inside the generic function `transpose_transpose`. Once it is inlined into `main`, the Chapter 3 `SimplifyRedundantTranspose` pattern removes both transposes, and the function disappears:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch4
 ./build/toyc-ch4 ../../test_Example/Toy/Ch4/transpose_transpose.toy -emit=mlir -opt 2>&1
 ```
 
-Actual output **[16]**:
+Real output **[17]**:
 
 ```mlir
 module {
@@ -1317,12 +1309,14 @@ module {
 }
 ```
 
+`trivial_reshape.toy` has no function to inline; the Chapter 3 reshape patterns fold its reshapes into one constant, as before:
+
 ```bash
 cd /Users/roy/study/mlir/toy/Ch4
 ./build/toyc-ch4 ../../test_Example/Toy/Ch4/trivial_reshape.toy -emit=mlir -opt 2>&1
 ```
 
-Actual output **[17]**:
+Real output **[18]**:
 
 ```mlir
 module {
@@ -1334,7 +1328,6 @@ module {
 }
 ```
 
-In `transpose_transpose.toy` the `transpose(transpose(x))` sits inside the generic function `transpose_transpose`; once it is inlined into `main`, the Chapter 3 `SimplifyRedundantTranspose` pattern removes both transposes and the function disappears.
 
 The negative test `invalid.mlir` is rejected by the verifier while parsing:
 
@@ -1343,7 +1336,7 @@ cd /Users/roy/study/mlir/toy/Ch4
 ./build/toyc-ch4 ../../test_Example/Toy/Ch4/invalid.mlir -emit=mlir
 ```
 
-Real output **[18]** (exit status 3):
+Real output **[19]** (exit status 3):
 
 ```text
 ../../test_Example/Toy/Ch4/invalid.mlir:8:8: error: 'toy.print' op requires zero results
@@ -1353,11 +1346,9 @@ Real output **[18]** (exit status 3):
 Error can't load file ../../test_Example/Toy/Ch4/invalid.mlir
 ```
 
-`ast.toy`, `empty.toy`, and `scalar.toy` are carried over from earlier chapters (`-emit=ast` and plain `-emit=mlir`). 
+`ast.toy`, `empty.toy` and `scalar.toy` are carried over unchanged from earlier chapters.
 
-### B.1 Poking at `toy.cast` directly
-
-The hand-written casts of section 4.4 can go through `-opt` too. A cast to `tensor<*xf64>` in front of a generic op goes through the whole story of sections 4.4–5.4: shape inference makes the cast an identity and the canonicalizer folds it away.
+**Poking at `toy.cast` directly.** The hand-written casts of section 4.4 can go through `-opt` too. A cast to `tensor<*xf64>` in front of a generic op goes through the whole story of sections 4.4–5.4: shape inference makes the cast an identity and the canonicalizer folds it away.
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch4
@@ -1372,7 +1363,7 @@ toy.func @main() {
 EOF
 ```
 
-Actual output **[19]**:
+Real output **[20]**:
 
 ```mlir
 module {
@@ -1387,11 +1378,9 @@ module {
 
 ---
 
----
-
 ## Appendix C: What Chapter 4 adds to the build
 
-The op/dialect TableGen pattern is explained in Ch2 appendix E and the DRR rewriter step in Ch3 appendix C. Chapter 4 adds a third TableGen flavor: op-interface generation.
+The op/dialect TableGen pattern is explained in Ch2 appendix E and the DRR rewriter step in Ch3 appendix C. Chapter 4 adds a third TableGen flavor: op-interface generation. So three TableGen targets now run before the C++ compiles: the op/dialect `.inc` files, the DRR rewriters (`build/ToyCombine.inc`), and the shape-inference interface (`build/include/toy/ShapeInferenceOpInterfaces.{h,cpp}.inc`).
 
 ### C.1 The chapter targets
 
@@ -1432,7 +1421,7 @@ target_link_libraries(toyc-ch4
 Relative to Chapter 3:
 
 - **`mlir/ShapeInferencePass.cpp`** joins the source list.
-- **`add_dependencies(toyc-ch4 ToyCh4ShapeInferenceInterfaceIncGen)`** must run before compiling, since `ShapeInferenceInterface.h` (included from `Dialect.h`) includes a generated `.h.inc`, and `ShapeInferencePass.cpp` includes the generated `.cpp.inc`.
+- **`add_dependencies(toyc-ch4 ToyCh4ShapeInferenceInterfaceIncGen)`** makes the build generate the interface files before compiling the sources that include them, since `ShapeInferenceInterface.h` (included from `Dialect.h`) includes a generated `.h.inc`, and `ShapeInferencePass.cpp` includes the generated `.cpp.inc`.
 - Linking is still just the monolithic `MLIR` + `LLVM` dylibs, which already contain the call, cast and function interfaces and the transforms used here.
 
 ### C.2 Interface TableGen
@@ -1457,7 +1446,7 @@ add_public_tablegen_target(ToyCh4ShapeInferenceInterfaceIncGen)
 ```
 
 - **`-gen-op-interface-decls`** → `ShapeInferenceOpInterfaces.h.inc` — the `ShapeInference` interface class (included by `ShapeInferenceInterface.h`);
-- **`-gen-op-interface-defs`** → `ShapeInferenceOpInterfaces.cpp.inc` — the interface's registration/model definitions (included by `ShapeInferencePass.cpp`).
+- **`-gen-op-interface-defs`** → `ShapeInferenceOpInterfaces.cpp.inc` — the out-of-line `ShapeInference::inferShapes()`, which dispatches to the op's model (section 5.1; included by `ShapeInferencePass.cpp`).
 
 (As the file's comments note, `add_mlir_dialect()` / `add_mlir_interfaces()` would wrap all of this; this repo spells the steps out, which is more instructive.) In a standalone build the files land in `Ch4/build/include/toy/`; in the superbuild, in `toy/build/Ch4/include/toy/`. `Ops.td` also includes `ShapeInferenceInterface.td`, so the op generator sees the interface definition when it expands `DeclareOpInterfaceMethods<ShapeInferenceOpInterface>`.
 
@@ -1472,17 +1461,17 @@ cd /Users/roy/study/mlir/toy/Ch4
 ./examples.sh -l
 ```
 
-Real output **[20]** (abridged):
+Real output **[21]** (abridged):
 
 ```text
-[ 1] 4.1   sed 's/toy.func private/toy.func/' ../../test_Example/Toy/Ch4/shape_inference.mlir \
-[ 2] 4.3   ./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir 2>&1 | grep -E 'toy.func|generic_call'
+[ 1] 3     ./build/toyc-ch4 ../../test_Example/Toy/Ch4/codegen.toy -emit=mlir 2>&1
+[ 2] 4.1   echo "== as generated: multiply_transpose is private"
 ...
-[19] B.1   cat <<'EOF' | ./build/toyc-ch4 - -x mlir -emit=mlir -opt 2>&1
-[20] D     ./examples.sh -l
+[20] B     cat <<'EOF' | ./build/toyc-ch4 - -x mlir -emit=mlir -opt 2>&1
+[21] D     ./examples.sh -l
 ```
 
-The script reads the commands from `README.md` on every run. A command is every `bash` code block in file order, except the build block (its first command after `cd` is `cmake`) and file excerpts (a `***path***` label above the fence). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". So adding, removing or reordering a command block renumbers the ones after it, and their **[N]** labels must be updated to match.
+The script reads the commands from `README.md` on every run. A command is every `bash` code block in file order, except file excerpts (a `***path***` label above the fence). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". So adding, removing or reordering a command block renumbers the ones after it, and their **[N]** labels must be updated to match.
 
 ---
 

@@ -31,25 +31,6 @@ What the target dialects buy us:
 
 The type story is important too. Toy ops work on the builtin [`RankedTensorType`](https://mlir.llvm.org/docs/Dialects/Builtin/#rankedtensortype): **value-semantics `tensor`s**, an abstract sequence of data that does not live in any memory. The lowered code works on [`MemRefType`](https://mlir.llvm.org/docs/Dialects/Builtin/#memreftype): **buffer-semantics `memref`s**, concrete references to a region of memory, indexed here by an affine loop nest. Part of this chapter is bridging that gap.
 
-### Where Chapter 5 lives in this repo
-
-How this repo is organized — the out-of-tree CMake superbuild at `toy/`, the pinned Homebrew LLVM/MLIR 20 toolchain, and the `build.sh`/`run.sh` helpers — is documented once in the top-level [README](../README.md#repository-layout). This chapter also remains configurable as a standalone project (section 6.1). Chapter 5 specifics:
-
-| Item | Location / value |
-|---|---|
-| Chapter 5 code | `/Users/roy/study/mlir/toy/Ch5/` |
-| Build | `cd toy && ./build.sh ch5` → binary at `./build/bin/toyc-ch5` |
-| Run | `cd toy && ./run.sh ch5` → `affine-lowering.mlir` with `-emit=mlir -opt`, `-emit=mlir-affine`, and `-emit=mlir-affine -opt` |
-| Test inputs | `/Users/roy/study/mlir/test_Example/Toy/Ch5/` (`affine-lowering.mlir` is the one this chapter uses) |
-
-Everything else (lexer, parser, AST, MLIRGen, the ODS dialect, the Ch3 combiner, the Ch4 shape-inference pass) carries over from Chapter 4. What changes:
-
-- **new** `mlir/LowerToAffineLoops.cpp` — the conversion target, the conversion patterns, and the lowering pass (sections 2–4);
-- `include/toy/Passes.h` — declares `createLowerToAffinePass()` (section 4.2);
-- `include/toy/Ops.td` — `PrintOp` now also accepts a `memref` operand (section 4.3);
-- `toyc.cpp` — a new `-emit=mlir-affine` action and the post-lowering pipeline (section 5);
-- `CMakeLists.txt` — one new source file (appendix C).
-
 The appendices hold the extras: more runs — FileCheck and more inputs (A), reproducing `-opt` with stock `mlir-opt` (B), what Chapter 5 adds to the build (C), and the script that runs every command in this README (D).
 
 ---
