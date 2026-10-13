@@ -14,7 +14,7 @@ In this chapter we write four such rewrites:
 - `transpose(transpose(x)) → x` — hand-written C++ (`SimplifyRedundantTranspose` in `mlir/ToyCombine.cpp`, section 3)
 - Three reshape optimizations — DRR (`mlir/ToyCombine.td`, section 4)
 
-and turn them on with a new `-opt` driver flag that runs MLIR's stock canonicalizer (section 3.4). Section 5 builds the chapter and runs it end to end.
+and turn them on with a new `-opt` driver flag that runs MLIR's stock canonicalizer (section 3.4). Section 5 builds the chapter and runs it end to end, and section 6 shows how to derive its code yourself.
 
 The transpose pattern is also written in DRR (section 3.7), to compare the two styles piece by piece. That version lives in `mlir/alt/drr_transpose/`, which the build doesn't use.
 
@@ -35,7 +35,7 @@ MLIR gives us two ways to write such a pattern:
 
 DRR matches and builds ops by their ODS records (`ReshapeOp`, `ConstantOp`), so it only works for operations defined with ODS, as in Chapter 2.
 
-**Who runs the patterns.** A pattern only describes one rewrite; it doesn't run by itself. Whichever way it is written, it ends up as a `RewritePattern` object, and each op type hands its patterns to MLIR through a static `getCanonicalizationPatterns` hook (section 3.3). The **canonicalizer**, a stock MLIR pass that cleans up IR, collects these patterns and applies them with a *greedy pattern rewrite driver*: it keeps applying any pattern that matches, anywhere in the function, until none does. Section 3.4 adds the canonicalizer to `toyc-ch3` as the `-opt` flag, and section 4.5 watches the driver work on a real input, one rewrite at a time.
+**Who runs the patterns.** A pattern only describes one rewrite; it doesn't run by itself. Whichever way it is written, it ends up as a `RewritePattern` object, and each op type hands its patterns to MLIR through a static `getCanonicalizationPatterns` hook (section 3.3). The **canonicalizer**, a stock MLIR pass that cleans up IR, collects these patterns and applies them with a *greedy pattern rewrite driver*: it keeps applying any pattern that matches, anywhere in the function, until none does. Section 3.4 adds the canonicalizer to `toyc-ch3` as the `-opt` flag, and section 4.5 watches the driver work on a real input, one rewrite at a time. Section 6 shows how to arrive at this chapter's code without having it.
 
 ---
 
@@ -856,7 +856,7 @@ These are core transformations through always-available hooks (`getCanonicalizat
 
 The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 3 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — a second TableGen rule for the DRR patterns — is in appendix D.
 
-Every command in this README is numbered by its output (**[1]**–**[26]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix E).
+Every command in this README is numbered by its output (**[1]**–**[34]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix E).
 
 ### 5.1 Building
 
@@ -972,7 +972,305 @@ The second test input, `trivial_reshape.toy`, is run before and after `-opt` in 
 
 ---
 
-## 6. Key Takeaways & Pitfalls
+## 6. Deriving the Chapter 3 rewrites yourself
+
+Sections 3 and 4 explain this chapter's code as it is. This section shows how to arrive at it without having it. Little of it is invented: the rewrites are read off the IR, and every hook, base class, pass and DRR directive they use is already declared in the installed MLIR headers and `.td` files:
+
+| Part of the code | Where it comes from |
+|---|---|
+| `mlir/ToyCombine.cpp`: `SimplifyRedundantTranspose` (lines 26–53) | The unoptimized IR (section 3.1) and the target IR (section 6.2), written against `OpRewritePattern` (section 6.4) |
+| `mlir/ToyCombine.cpp`: the two `getCanonicalizationPatterns` definitions (lines 55–68) | The hook ODS declares for `hasCanonicalizer` (section 6.4) |
+| `mlir/ToyCombine.td`: the three reshape patterns | The IR before and after (section 6.2), written in DRR's vocabulary (section 6.5) |
+| `include/toy/Ops.td`: `hasCanonicalizer = 1` on two ops | A field of ODS's `Op` class (section 6.4) |
+| `include/toy/Ops.td`: `Pure` on four ops | The dead transpose that survives without it (section 3.5) |
+| `toyc.cpp`: `-opt`, the `PassManager`, `loadMLIR()` | The stock canonicalizer pass and the pass-manager option functions (section 6.3) |
+| `mlir/Dialect.cpp`, `mlir/MLIRGen.cpp` | No real change (section 6.1) |
+| `CMakeLists.txt`: the `-gen-rewriters` rule for `ToyCombine.td` and the moved `include_directories` | Chapter 2's `Ops.td` rule with the DRR generator, and the build errors that force the include paths (section 6.6; appendix D) |
+
+### 6.1 Step 1: see what changes relative to Chapter 2
+
+A chapter starts from the previous one. `diff -rq` lists the new and changed files (build trees, the walkthrough stage files of Ch2's `include/toy/Ops/`, the `alt/` copies and the scripts excluded), and a count of changed lines shows where the work is:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch3
+diff -rq -x build -x alt -x Ops -x '*.md' -x '*.sh' ../Ch2 .
+for f in include/toy/Ops.td toyc.cpp mlir/Dialect.cpp mlir/MLIRGen.cpp CMakeLists.txt include/toy/CMakeLists.txt; do
+  printf '%-26s %3s changed lines\n' "$f" "$(diff ../Ch2/$f $f | grep -c '^[<>]')"
+done
+diff <(sort ../Ch2/mlir/Dialect.cpp) <(sort mlir/Dialect.cpp) && echo "mlir/Dialect.cpp: same lines, reordered"
+```
+
+Real output **[17]**:
+
+```text
+Files ../Ch2/CMakeLists.txt and ./CMakeLists.txt differ
+Files ../Ch2/include/toy/CMakeLists.txt and ./include/toy/CMakeLists.txt differ
+Files ../Ch2/include/toy/Ops.td and ./include/toy/Ops.td differ
+Files ../Ch2/mlir/Dialect.cpp and ./mlir/Dialect.cpp differ
+Files ../Ch2/mlir/MLIRGen.cpp and ./mlir/MLIRGen.cpp differ
+Only in ./mlir: ToyCombine.cpp
+Only in ./mlir: ToyCombine.td
+Files ../Ch2/toyc.cpp and ./toyc.cpp differ
+include/toy/Ops.td          24 changed lines
+toyc.cpp                    60 changed lines
+mlir/Dialect.cpp            26 changed lines
+mlir/MLIRGen.cpp             2 changed lines
+CMakeLists.txt              26 changed lines
+include/toy/CMakeLists.txt   2 changed lines
+mlir/Dialect.cpp: same lines, reordered
+```
+
+- Two files are new, `ToyCombine.td` and `ToyCombine.cpp`: the patterns.
+- `Dialect.cpp`'s 26 changed lines are a move: sorted, the two versions are identical, so `GenericCallOp::build` only changed place. `MLIRGen.cpp`'s two lines are one comment added to an argument (`/*results=*/{}`). Neither needs deriving.
+- The real changes are `Ops.td` (`Pure` and `hasCanonicalizer`, sections 3.3 and 3.6), `toyc.cpp` (the pipeline, section 3.4), and the two CMake files (section 6.6, appendix D).
+
+### 6.2 Step 2: write the IR you want by hand
+
+Before any code, write down what each rewrite should produce. For the transposes it is plain: `@transpose_transpose` should return its argument (the unoptimized IR is section 3.1's). For `trivial_reshape.toy` (unoptimized IR in section 4.5), all three reshapes should go, leaving one constant of the final type. Writing that constant by hand shows a detail the rewrite must handle. The driver parses `.mlir` on stdin (`-` with `-x mlir`), so both candidate forms can be checked; the second keeps the original data and changes only the type:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch3
+./build/toyc-ch3 - -x mlir -emit=mlir <<'EOF'; echo "toyc-ch3 exit status: $?"
+toy.func @main() {
+  %0 = toy.constant dense<[[1.000000e+00], [2.000000e+00]]> : tensor<2x1xf64>
+  toy.print %0 : tensor<2x1xf64>
+  toy.return
+}
+EOF
+./build/toyc-ch3 - -x mlir -emit=mlir <<'EOF'; echo "toyc-ch3 exit status: $?"
+toy.func @main() {
+  %0 = toy.constant dense<[1.000000e+00, 2.000000e+00]> : tensor<2x1xf64>
+  toy.print %0 : tensor<2x1xf64>
+  toy.return
+}
+EOF
+```
+
+Real output **[18]**:
+
+```text
+module {
+  toy.func @main() {
+    %0 = toy.constant dense<[[1.000000e+00], [2.000000e+00]]> : tensor<2x1xf64>
+    toy.print %0 : tensor<2x1xf64>
+    toy.return
+  }
+}
+toyc-ch3 exit status: 0
+<stdin>:2:57: error: inferred shape of elements literal ([2]) does not match type ([2, 1])
+  %0 = toy.constant dense<[1.000000e+00, 2.000000e+00]> : tensor<2x1xf64>
+                                                        ^
+Error can't load file -
+toyc-ch3 exit status: 3
+```
+
+- The first form is valid, and it is exactly the `-opt` output of section 4.5: this is the target.
+- The second is rejected while parsing: the data of a dense literal carries its own shape (`[2]`), and it must match the type (`[2, 1]`). So folding a reshape into a constant can't just change the constant's type; the attribute itself has to be rebuilt in the new shape. Section 6.5 finds the function that does that.
+
+### 6.3 Step 3: find the stock pass that will run the patterns
+
+A pattern needs a pass to run it. Before writing one, look for a stock pass: `mlir-opt --help` lists the generic ones, and the C++ function that creates each is declared in `mlir/Transforms/Passes.h`. The pass-manager command-line options `toyc.cpp` wires up are declared next to `PassManager`:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch3
+I=/opt/homebrew/opt/llvm@20/include
+mlir-opt --help | grep -E -- '--(canonicalize|cse|sccp|symbol-dce) '
+grep -n 'createCanonicalizerPass()\|createCSEPass()' $I/mlir/Transforms/Passes.h
+grep -n -B1 'void registerPassManagerCLOptions\|LogicalResult applyPassManagerCLOptions' $I/mlir/Pass/PassManager.h
+```
+
+Real output **[19]**:
+
+```text
+      --canonicalize                                         -   Canonicalize operations
+      --cse                                                  -   Eliminate common sub-expressions
+      --sccp                                                 -   Sparse Conditional Constant Propagation
+      --symbol-dce                                           -   Eliminate dead symbols
+53:std::unique_ptr<Pass> createCanonicalizerPass();
+72:std::unique_ptr<Pass> createCSEPass();
+503-/// 'applyPassManagerCLOptions' method below.
+504:void registerPassManagerCLOptions();
+--
+507-/// with 'registerPassManagerOptions'.
+508:LogicalResult applyPassManagerCLOptions(PassManager &pm);
+```
+
+- `--canonicalize` is the stock pass that applies op-specific rewrites, and `createCanonicalizerPass()` is its C++ factory: the one line section 3.4 adds to the pass manager. `createCSEPass()` sits next to it; Chapter 4 adds it.
+- `registerPassManagerCLOptions()` and `applyPassManagerCLOptions(pm)` are the two calls that give `toyc-ch3` the `--mlir-print-ir-*` flags (section 3.4): one in `main()`, one on the pass manager; the comment above the first names the second.
+- Using a stock pass means the patterns must reach it the way it collects them, which is the next step.
+
+### 6.4 Step 4: find the hook, its ODS field, and the pattern base class
+
+The canonicalizer collects patterns from each op's static `getCanonicalizationPatterns` hook, whose empty default section 3.3 finds in `OpDefinition.h`. Two more lookups give the rest of the C++ side: the ODS field that declares an op's own hook, and the base class for a pattern rooted at one op:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch3
+I=/opt/homebrew/opt/llvm@20/include
+grep -n -B1 -A8 'bit hasCanonicalizer = 0;' $I/mlir/IR/OpBase.td
+awk '/^\/\/\/ OpRewritePattern is a wrapper/,/^};/' $I/mlir/IR/PatternMatch.h
+grep -n -A1 'virtual LogicalResult matchAndRewrite(SourceOp op' $I/mlir/IR/PatternMatch.h
+```
+
+Real output **[20]**:
+
+```text
+417-  // Whether this op has associated canonicalization patterns.
+418:  bit hasCanonicalizer = 0;
+419-
+420-  // Whether this op has a static "canonicalize" method to perform "match and
+421-  // rewrite patterns".
+422-  bit hasCanonicalizeMethod = 0;
+423-
+424-  // Whether this op has a folder.
+425-  bit hasFolder = 0;
+426-
+/// OpRewritePattern is a wrapper around RewritePattern that allows for
+/// matching and rewriting against an instance of a derived operation class as
+/// opposed to a raw Operation.
+template <typename SourceOp>
+struct OpRewritePattern
+    : public detail::OpOrInterfaceRewritePatternBase<SourceOp> {
+  /// Patterns must specify the root operation name they match against, and can
+  /// also specify the benefit of the pattern matching and a list of generated
+  /// ops.
+  OpRewritePattern(MLIRContext *context, PatternBenefit benefit = 1,
+                   ArrayRef<StringRef> generatedNames = {})
+      : detail::OpOrInterfaceRewritePatternBase<SourceOp>(
+            SourceOp::getOperationName(), benefit, context, generatedNames) {}
+};
+342:  virtual LogicalResult matchAndRewrite(SourceOp op,
+343-                                        PatternRewriter &rewriter) const {
+```
+
+- **The field.** `hasCanonicalizer` declares `getCanonicalizationPatterns()` in the generated class (section 3.3 shows the declaration). Its neighbors are the alternatives: `hasCanonicalizeMethod` for a single `canonicalize` method and `hasFolder` for a `fold()` (appendix C.1). This chapter's rewrites are full patterns, one of them generated by DRR, so `hasCanonicalizer` is the one to set.
+- **The base class.** `OpRewritePattern<SourceOp>` takes the context and a benefit (default 1), and passes `SourceOp::getOperationName()` as the root, so the pattern only runs on that op. Its `matchAndRewrite(SourceOp op, PatternRewriter &rewriter)` is the method to override; the copied signature is section 3.2's `matchAndRewrite(TransposeOp op, mlir::PatternRewriter &rewriter) const override`.
+- **The body.** Section 3.1's IR names what to check (the operand comes from another `toy.transpose`) and section 6.2 names the result (the inner operand). `getDefiningOp<TransposeOp>()` and `rewriter.replaceOp` express exactly these two; section 3.2 explains them.
+
+### 6.5 Step 5: write the reshape rules in DRR's vocabulary
+
+DRR has a small vocabulary, all defined in `mlir/IR/PatternBase.td`; the `Constraint` and `CPred` used for conditions come from `mlir/IR/Constraints.td`. The definitions at the top level of these files are the whole menu:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch3
+I=/opt/homebrew/opt/llvm@20/include
+grep -n '^class \|^def ' $I/mlir/IR/PatternBase.td
+grep -n '^class Constraint<\|^class CPred<' $I/mlir/IR/Constraints.td
+grep -n -B3 'DenseElementsAttr reshape(' $I/mlir/IR/BuiltinAttributes.h
+```
+
+Real output **[21]**:
+
+```text
+23:def addBenefit;
+92:class Pattern<dag source, list<dag> results, list<dag> preds = [],
+120:class Pat<dag pattern, dag result, list<dag> preds = [],
+148:class NativeCodeCall<string expr, int returns = 1> {
+153:class NativeCodeCallVoid<string expr> : NativeCodeCall<expr, 0>;
+155:def ConstantLikeMatcher : NativeCodeCall<"::mlir::success("
+164:def replaceWithValue;
+175:def location;
+204:def returnType;
+219:def either;
+235:def variadic;
+241:def HasNoUseOf: Constraint<
+63:class CPred<code pred> : Pred {
+143:class Constraint<Pred pred, string desc = ""> {
+617-  /// Return a new DenseElementsAttr that has the same data as the current
+618-  /// attribute, but has been reshaped to 'newType'. The new type must have the
+619-  /// same total number of elements as well as element type.
+620:  DenseElementsAttr reshape(ShapedType newType);
+```
+
+- **Each before/after pair of section 6.2 maps to one entry.** A rewrite to another op is a `Pat<source, result>`; a rewrite to an existing value is `replaceWithValue`; a condition the DAG shape can't express (identical types) is a `Constraint` wrapping a `CPred`; and a computed attribute is a `NativeCodeCall`. Section 4 builds the three patterns from exactly these four.
+- **The computation the constant fold needs** is `DenseElementsAttr::reshape(ShapedType)`: same data, new shape, as section 6.2 requires. `ReshapeConstant` (section 4.4) is a `NativeCodeCall` around that one call.
+
+`mlir-tblgen` checks the shape of a pattern against the ops' ODS records. A source DAG that gives `toy.reshape` two operands, in a record that isn't a repo file (so it goes on stdin):
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch3
+mlir-tblgen -gen-rewriters -I include -I /opt/homebrew/opt/llvm@20/include <<'EOF' >/dev/null
+include "mlir/IR/PatternBase.td"
+include "toy/Ops.td"
+def BadPattern : Pat<(ReshapeOp $a, $b), (ReshapeOp $a)>;
+EOF
+```
+
+Real output **[22]** (exit status 1):
+
+```text
+<stdin>:3:5: error: op 'toy.reshape' argument number mismatch: 2 in pattern vs. 1 in definition
+def BadPattern : Pat<(ReshapeOp $a, $b), (ReshapeOp $a)>;
+    ^
+```
+
+It can't check what a pattern means, though. Write the constant fold without `ReshapeConstant`, as `(ConstantOp $arg)` (the second form of section 6.2): `mlir-tblgen` accepts it. A scratch copy of the chapter with that one change (`sed` in a temporary directory; the build takes about 10 seconds) runs on `trivial_reshape.toy`:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch3
+S=$(mktemp -d)
+cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
+sed -i '' 's/(ConstantOp (ReshapeConstant \$arg, \$res))>;/(ConstantOp $arg)>;/' "$S"/mlir/ToyCombine.td
+cmake -S "$S" -B "$S"/build -G Ninja >/dev/null && cmake --build "$S"/build >/dev/null
+"$S"/build/toyc-ch3 ../../test_Example/Toy/Ch3/trivial_reshape.toy -emit=mlir -opt 2>&1; echo "toyc-ch3 exit status: $?"
+rm -rf "$S"
+```
+
+Real output **[23]**:
+
+```text
+../../test_Example/Toy/Ch3/trivial_reshape.toy:6:3: error: 'toy.constant' op return type must match the one of the attached value attribute: 1 != 2
+  var c<2,1> = b;
+  ^
+../../test_Example/Toy/Ch3/trivial_reshape.toy:6:3: note: see current operation: %0 = "toy.constant"() <{value = dense<[1.000000e+00, 2.000000e+00]> : tensor<2xf64>}> : () -> tensor<2x1xf64>
+toyc-ch3 exit status: 4
+```
+
+- DRR gives the new `toy.constant` the type of the op it replaces, `tensor<2x1xf64>` (section 4.2), but `$arg` still holds the `tensor<2xf64>` data, and `ConstantOp`'s verifier (Chapter 2) rejects the mismatch after the pass. The pass fails, so the driver returns 4.
+- This is the same mismatch the parser rejected in section 6.2, now caught one layer later, and it is why the real pattern passes `$res` to `ReshapeConstant`: the replaced op's type is the shape to reshape to.
+
+**`mlir-tblgen` checks that a DRR pattern fits the ops' declarations; only the ops' verifiers check that what it builds is valid.** That is why the ops' `verify()` methods from Chapter 2 matter for this chapter's rewrites too.
+
+### 6.6 Step 6: wire the DRR file into the build
+
+`ToyCombine.td` needs a build rule, and the rule is Chapter 2's `Ops.td` rule with another generator. `mlir-tblgen --help` lists the generators: next to the op generators Chapter 2 uses is the one for DRR. The two `include_directories` details of appendix D.1 aren't guesses either: a scratch copy of the chapter for each, with Chapter 2's line put back by `sed` (in temporary directories; the two builds take about 20 seconds), shows the error that forces it:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch3
+mlir-tblgen --help | grep -E -- '-gen-(op-decls|op-defs|rewriters) '
+for v in order bindir; do
+  S=$(mktemp -d)
+  cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
+  case $v in
+    order)  sed -i '' -e '/^include_directories(include)/d' \
+                      -e 's|^include_directories(${CMAKE_CURRENT_BINARY_DIR})$|include_directories(include/)|' "$S"/CMakeLists.txt ;;
+    bindir) sed -i '' '/^include_directories(${CMAKE_CURRENT_BINARY_DIR})$/d' "$S"/CMakeLists.txt ;;
+  esac
+  echo "--- $v"
+  cmake -S "$S" -B "$S"/build -G Ninja >/dev/null && cmake --build "$S"/build 2>&1 | grep -E ': (fatal )?error:' | sed "s|$S|\$S|g"
+  rm -rf "$S"
+done
+```
+
+Real output **[24]**:
+
+```text
+      --gen-op-decls                                    - Generate op declarations
+      --gen-op-defs                                     - Generate op definitions
+      --gen-rewriters                                   - Generate pattern rewriters
+--- order
+$S/mlir/ToyCombine.td:18:9: error: could not find include file 'toy/Ops.td'
+$S/mlir/ToyCombine.td:18:9: error: Unexpected token at top level
+--- bindir
+$S/mlir/ToyCombine.cpp:23:10: fatal error: 'ToyCombine.inc' file not found
+```
+
+- **The generator:** `-gen-rewriters` turns `Pat` records into `RewritePattern` classes (section 4.6), so the rule is `mlir_tablegen(ToyCombine.inc -gen-rewriters)` plus a named target and an `add_dependencies`, the same three lines as Chapter 2's op rule.
+- **`order`** keeps Chapter 2's `include_directories(include/)` after the targets. `mlir_tablegen` passes only the include directories set before it, so `mlir-tblgen` can't resolve `include "toy/Ops.td"`: the line has to move above the rule.
+- **`bindir`** drops `include_directories(${CMAKE_CURRENT_BINARY_DIR})`. `ToyCombine.inc` is generated at the root of the binary directory, not under `include/toy/` like the op files, so `#include "ToyCombine.inc"` in `ToyCombine.cpp` finds nothing without it.
+
+---
+
+## 7. Key Takeaways & Pitfalls
 
 **Takeaways**
 
@@ -992,6 +1290,7 @@ The second test input, `trivial_reshape.toy`, is run before and after `-opt` in 
 - **Don't create infinite ping-pong.** The greedy driver iterates to fixpoint; a pair of patterns like `A→B` and `B→A` (or a pattern that "rewrites" an op to an identical op) never converges and hits the iteration limit. Each rewrite should strictly reduce some measure (op count, pattern-match opportunities).
 - **Op ordering / traversal is not yours to control.** Patterns fire in benefit order per op, over a worklist in unspecified overall order. Never write a pattern whose correctness depends on another pattern having already run — each must be independently sound; only *convergence* composes them. When several patterns match the same op, benefit decides, not the order in `results.add<...>` (section 4.4): in section 5.2 the benefit-2 constant fold, not the redundant-reshape pattern, removed `main`'s reshape, as appendix A shows.
 - **Canonicalization is local.** It didn't remove the `toy.generic_call` round-trip in `main` — interprocedural wins need the inliner and shape inference, which is exactly where [Chapter 4](../Ch4/README.md) picks up.
+- **`mlir-tblgen` accepts DRR patterns that build invalid ops.** It checks a pattern against the ops' ODS records (operand counts, names), not what the result means: a constant fold that keeps the old data under the new type compiles, and only `ConstantOp`'s verifier rejects it at run time (section 6.5).
 - **DRR `$arg` on a `ConstantOp` binds the attribute, not a value.** Because ODS declares `ConstantOp`'s input as an attribute, DRR captures a `DenseElementsAttr` — which is why `ReshapeConstant` can call `.reshape(...)` on it directly (section 4.4). An operand argument binds a `Value` and an attribute argument binds the attribute; mixing them up is a classic DRR stumble.
 
 ---
@@ -1005,7 +1304,7 @@ cd /Users/roy/study/mlir/toy/Ch3
 ./build/toyc-ch3 ../../test_Example/Toy/Ch3/transpose_transpose.toy -emit=mlir -opt -mlir-print-debuginfo 2>&1
 ```
 
-Real output **[17]**:
+Real output **[25]**:
 
 ```mlir
 module {
@@ -1039,7 +1338,7 @@ cd /Users/roy/study/mlir/toy/Ch3
     --mlir-print-ir-before-all --mlir-print-ir-after-all 2>&1
 ```
 
-Real output **[18]** (abridged: the final module dump, the same as the `-opt` run of section 5.2, is left out):
+Real output **[26]** (abridged: the final module dump, the same as the `-opt` run of section 5.2, is left out):
 
 ```mlir
 // -----// IR Dump Before Canonicalizer (canonicalize) //----- //
@@ -1088,7 +1387,7 @@ cd /Users/roy/study/mlir/toy/Ch3
   | FileCheck ../../test_Example/Toy/Ch3/trivial_reshape.toy && echo "both checks pass"
 ```
 
-Real output **[19]**:
+Real output **[27]**:
 
 ```text
 both checks pass
@@ -1104,7 +1403,7 @@ cd /Users/roy/study/mlir/toy/Ch3
   | ./build/toyc-ch3 - -x mlir -emit=mlir -opt 2>&1
 ```
 
-Real output **[20]**:
+Real output **[28]**:
 
 ```mlir
 module {
@@ -1127,7 +1426,7 @@ cd /Users/roy/study/mlir/toy/Ch3
 ./build/toyc-ch3 ../../test_Example/Toy/Ch3/invalid.mlir -emit=mlir -opt
 ```
 
-Real output **[21]** (exit status 3):
+Real output **[29]** (exit status 3):
 
 ```
 ../../test_Example/Toy/Ch3/invalid.mlir:8:8: error: 'toy.print' op requires zero results
@@ -1158,7 +1457,7 @@ def EmptyOp : Op<Demo_Dialect, "empty">;
 EOF
 ```
 
-Real output **[22]**:
+Real output **[30]**:
 
 ```text
 def EmptyOp {	// Op
@@ -1255,7 +1554,7 @@ td | mlir-tblgen -gen-op-defs -I /opt/homebrew/opt/llvm@20/include \
   | grep -E -A2 '^void AllBitsOp::getCanonicalizationPatterns|AllBitsOp::(read|write)Properties\('
 ```
 
-Real output **[23]**:
+Real output **[31]**:
 
 ```text
 == declarations
@@ -1294,7 +1593,7 @@ def NoBuilderOp : Op<Demo_Dialect, "no_builder"> {
 EOF
 ```
 
-Real output **[24]** (exit status 1):
+Real output **[32]** (exit status 1):
 
 ```text
 <stdin>:3:5: error: default builders are skipped and no custom builders provided
@@ -1356,7 +1655,7 @@ cd /Users/roy/study/mlir/toy/Ch3
 grep -o 'mlir-tblgen -gen-rewriters[^&]*' build/build.ninja
 ```
 
-Real output **[25]**:
+Real output **[33]**:
 
 ```text
 mlir-tblgen -gen-rewriters -I /Users/roy/study/mlir/toy/Ch3 -I/opt/homebrew/opt/llvm@20/include -I/opt/homebrew/opt/llvm@20/include -I/Users/roy/study/mlir/toy/Ch3/include /Users/roy/study/mlir/toy/Ch3/mlir/ToyCombine.td --write-if-changed -o ToyCombine.inc -d ToyCombine.inc.d 
@@ -1377,14 +1676,14 @@ cd /Users/roy/study/mlir/toy/Ch3
 ./examples.sh -l
 ```
 
-Real output **[26]** (abridged):
+Real output **[34]** (abridged):
 
 ```text
 [ 1] 3.1   ./build/toyc-ch3 ../../test_Example/Toy/Ch3/transpose_transpose.toy -emit=mlir 2>&1
 [ 2] 3.1   /opt/homebrew/opt/llvm@20/bin/clang++ -O3 -S -emit-llvm -x c++ - -o - <<'EOF' \
 ...
-[25] D.1   grep -o 'mlir-tblgen -gen-rewriters[^&]*' build/build.ninja
-[26] E     ./examples.sh -l
+[33] D.1   grep -o 'mlir-tblgen -gen-rewriters[^&]*' build/build.ninja
+[34] E     ./examples.sh -l
 ```
 
 The script reads the commands from `README.md` on every run. A command is every `bash` code block in file order, except the build block (its first command after `cd` is `cmake`) and file excerpts (a `***path***` label above the fence). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". So adding, removing or reordering a command block renumbers the ones after it, and their **[N]** labels must be updated to match.

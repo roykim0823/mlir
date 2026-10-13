@@ -16,5 +16,5 @@ add_mlir_example_library(
 
   # Link in the transform dialect, an all generated dialects.
   LINK_LIBS PRIVATE
-  MLIRTransformDialect
+  MLIR                      # libMLIR.dylib
 )

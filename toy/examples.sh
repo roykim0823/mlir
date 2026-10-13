@@ -43,7 +43,7 @@ extract() {
       inb = 1; body = ""; skip = (prev ~ /^\*\*\*.*\*\*\*$/); next
     }
     /^ *```/ { fence = 1; prev = $0; next }
-    /^#{2,3} ([0-9]+\.|[A-F]\.[0-9]|Appendix )/ { sec = $0; sub(/^#+ /, "", sec) }
+    /^#{2,3} ([0-9]+\.|[A-Z]\.[0-9]|Appendix )/ { sec = $0; sub(/^#+ /, "", sec) }
     /[^ ]/ { prev = $0 }
   ' "$README"
 }

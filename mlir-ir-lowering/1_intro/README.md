@@ -270,6 +270,16 @@ calling out:
 > **Result preview:** the loop sums `0..9`, so the program returns **45**, not
 > 42. (Different from Part A on purpose.)
 
+### The "standard" dialects
+
+`example.mlir` uses four dialects (`func`, `index`, `scf`, `arith`), and lowering
+it passes through two more (`cf`, then `llvm`). Add `math` and you have the six
+dialects the reference article calls the **"standard MLIR dialects"**: the
+low-level floor that almost every pipeline lowers through on its way to `llvm`.
+See [**Standard MLIR dialects**](../README.md#standard-mlir-dialects) in the top
+README for each one's ops, the `scf → cf` intermediate step of this very file,
+and the dialect → lowering-pass table behind Step 1's `mlir-opt` command.
+
 ### The build: [`build.sh`](2_mlir/build.sh)
 
 The script runs the full pipeline. We'll go through it stage by stage.
@@ -513,9 +523,9 @@ starts near the bottom, Part B a few landings up and descends through them:
    llvm dialect       example_opt.mlir│
      │  mlir-translate                ▼
    LLVM IR            example.ll  ◄────────  simple.ll   ← Part A starts here
-     │  llc                                   │  llc
+     │  llc                                  │  llc
    object (.o)        example.o               simple.o
-     │  clang                                 │  clang
+     │  clang                                │  clang
    native .so / executable  ◄────────────────┘   → callable from Python (ctypes)
 ```
 

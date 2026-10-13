@@ -31,7 +31,7 @@ What the target dialects buy us:
 
 The type story is important too. Toy ops work on the builtin [`RankedTensorType`](https://mlir.llvm.org/docs/Dialects/Builtin/#rankedtensortype): **value-semantics `tensor`s**, an abstract sequence of data that does not live in any memory. The lowered code works on [`MemRefType`](https://mlir.llvm.org/docs/Dialects/Builtin/#memreftype): **buffer-semantics `memref`s**, concrete references to a region of memory, indexed here by an affine loop nest. Part of this chapter is bridging that gap.
 
-The appendices hold the extras: more runs — FileCheck and more inputs (A), reproducing `-opt` with stock `mlir-opt` (B), what Chapter 5 adds to the build (C), and the script that runs every command in this README (D).
+Section 7 shows how to derive `LowerToAffineLoops.cpp` and the driver changes yourself step by step, from the ops left to lower to the builder calls and the passes the lowering needs first. The appendices hold the extras: more runs — FileCheck and more inputs (A), reproducing `-opt` with stock `mlir-opt` (B), what Chapter 5 adds to the build (C), and the script that runs every command in this README (D).
 
 ---
 
@@ -95,7 +95,7 @@ Two details of the code:
 
 ## 3. Conversion Patterns
 
-After the conversion target is defined, we define how to convert the *illegal* operations into *legal* ones. Like Chapter 3's canonicalization, the conversion framework uses [rewrite patterns](https://mlir.llvm.org/docs/Tutorials/QuickstartRewrites/) for the conversion logic. Everything in this section is from `mlir/LowerToAffineLoops.cpp`; read it top to bottom alongside this section.
+After the conversion target is defined, we define how to convert the *illegal* operations into *legal* ones. Like Chapter 3's canonicalization, the conversion framework uses [rewrite patterns](https://mlir.llvm.org/docs/Tutorials/QuickstartRewrites/) for the conversion logic. Everything in this section is from `mlir/LowerToAffineLoops.cpp`; read it top to bottom alongside this section. Section 7 shows how to arrive at this file without having it.
 
 ### 3.1 ConversionPattern vs RewritePattern
 
@@ -1031,7 +1031,7 @@ Both dumps then come from the same `module->dump()` at the end — `-emit=mlir` 
 
 The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 5 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — a single source file — is in appendix C.
 
-Every command in this README is numbered by its output (**[1]**–**[20]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix D).
+Every command in this README is numbered by its output (**[1]**–**[29]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix D).
 
 ### 6.1 Building
 
@@ -1250,7 +1250,348 @@ Step by step:
 
 None of this was expressible before lowering: it is the payoff for descending to the affine level. And notably, `toy.print` sat there unaffected the whole time — high-level and low-level abstractions optimized side by side.
 
-## 7. Key Takeaways & Pitfalls
+---
+
+## 7. Deriving the Chapter 5 lowering and driver yourself
+
+Sections 2–5 explain `mlir/LowerToAffineLoops.cpp` and the driver changes as they are. This section shows how to arrive at them without having the code. The file is the chapter's only new source; the rest of the chapter's changes are small edits to existing files:
+
+| Part | Lines | Where it comes from |
+|---|---|---|
+| Header comment and `#include`s | 1–44 | One header per dialect whose ops the file creates (`AffineOps.h`, `Arith.h`, `FuncOps.h`, `MemRef.h`) and `DialectConversion.h` for the framework (section 7.5) |
+| Helpers `convertTensorToMemRef`, `insertAllocAndDealloc`, `lowerOpToLoops` | 50–107 | What every lowered op needs: a buffer instead of a tensor (section 7.2) and a loop nest around one element (section 7.4) |
+| The seven patterns | 110–318 | The IR you want, written by hand first (section 7.3), then turned into builder calls (section 7.4) |
+| `ToyToAffineLoweringPass` and its factory | 320–384 | Chapter 4's pass skeleton plus the conversion API of `DialectConversion.h` (section 7.5) |
+| `createLowerToAffinePass()` in `include/toy/Passes.h`, the new stage in `toyc.cpp` | — | Chapter 4's `createShapeInferencePass()`, copied (section 7.5) |
+| `toy.print`'s `AnyTypeOf<[F64Tensor, F64MemRef]>` in `include/toy/Ops.td` | — | A verifier error (section 7.6) |
+| The `-emit=mlir-affine` action and its `enableOpt \|\| isLoweringToAffine` condition in `toyc.cpp` | — | The conversion's failure when the Chapter 4 passes don't run first (section 7.7) |
+
+The steps use the chapter's test input, `affine-lowering.mlir` (section 3.2).
+
+### 7.1 Step 1: list what is left to lower
+
+The new pass runs after Chapter 4's pipeline, so its input is the `-emit=mlir -opt` output. The generic printer (`--mlir-print-op-generic`) writes every op under its full quoted name, so `grep` can count them:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+./build/toyc-ch5 ../../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir -opt --mlir-print-op-generic 2>&1 \
+  | grep -oE '"[a-z_]+\.[a-z_]+"' | sort | uniq -c
+```
+
+Real output **[15]**:
+
+```text
+   1 "builtin.module"
+   1 "toy.constant"
+   1 "toy.func"
+   1 "toy.mul"
+   1 "toy.print"
+   1 "toy.return"
+   1 "toy.transpose"
+```
+
+- Apart from `builtin.module`, every op is a Toy op. Each needs a target: `toy.constant`, `toy.transpose` and `toy.mul` (and `toy.add` in other inputs) become loops over buffers, `toy.func` and `toy.return` become their `func` counterparts, and `toy.print` stays (section 3.8). That gives one pattern per op, the list of section 3.9.
+- No `toy.generic_call`, `toy.cast` or `toy.reshape` is left: inlining, shape inference and canonicalization removed them, which is why the pass needs them first (section 5).
+
+### 7.2 Step 2: find the target ops
+
+The target dialects are the four of the Overview's table. Their ops are generated from their ODS (Operation Definition Specification) files, so `mlir-tblgen` lists the op classes of a dialect from its installed `.td` file — here the `affine` dialect:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+I=/opt/homebrew/opt/llvm@20/include
+mlir-tblgen -gen-op-decls -I $I $I/mlir/Dialect/Affine/IR/AffineOps.td | grep -oE '^class [A-Za-z]+Op '
+```
+
+Real output **[16]**:
+
+```text
+class AffineApplyOp 
+class AffineDelinearizeIndexOp 
+class AffineForOp 
+class AffineIfOp 
+class AffineLinearizeIndexOp 
+class AffineLoadOp 
+class AffineMaxOp 
+class AffineMinOp 
+class AffineParallelOp 
+class AffinePrefetchOp 
+class AffineStoreOp 
+class AffineVectorLoadOp 
+class AffineVectorStoreOp 
+class AffineYieldOp 
+```
+
+`AffineForOp`, `AffineLoadOp` and `AffineStoreOp` (with `AffineYieldOp`, the loop body's terminator) are what a loop nest over an array needs; the rest are for more general affine code. The same command on `MemRefOps.td` and `ArithOps.td` finds `memref.alloc`/`memref.dealloc` and `arith.constant`/`arith.mulf`.
+
+**Why a buffer is needed.** The affine ops read and write *memory*. An `affine.load` from a tensor value is rejected by the verifier (written in the generic form, so that the verifier, not the parser, checks it):
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+mlir-opt <<'EOF'
+func.func @f(%t: tensor<2x3xf64>) -> f64 {
+  %v = "affine.load"(%t) {map = affine_map<() -> (0, 0)>} : (tensor<2x3xf64>) -> f64
+  return %v : f64
+}
+EOF
+```
+
+Real output **[17]** (exit status 1):
+
+```text
+<stdin>:2:8: error: 'affine.load' op operand #0 must be memref of any type values, but got 'tensor<2x3xf64>'
+  %v = "affine.load"(%t) {map = affine_map<() -> (0, 0)>} : (tensor<2x3xf64>) -> f64
+       ^
+<stdin>:2:8: note: see current operation: %0 = "affine.load"(%arg0) <{map = affine_map<() -> (0, 0)>}> : (tensor<2x3xf64>) -> f64
+```
+
+So every lowered op first needs a `memref` of the same shape to write its result to, which is what `convertTensorToMemRef` and `insertAllocAndDealloc` provide (section 3.2), and its operands must already be memrefs, which is why the patterns read them through the adaptor (section 3.1).
+
+### 7.3 Step 3: write the target IR by hand and compare it with the pass
+
+Before writing any C++, write the IR the module should become: a buffer per tensor, six constant stores for `toy.constant`, a loop nest that loads with swapped indices for `toy.transpose`, a loop nest that loads, multiplies and stores for `toy.mul`, and `toy.print` on the result buffer. Then compare it with what the real pass produces. Both sides go through stock `mlir-opt`, which reprints them with the same SSA names; the hand-written side also gets the `canonicalize` and `cse` passes that `toyc-ch5` runs after the lowering (section 5). `toy.print` is written in the generic form, and `toyc-ch5` prints that form too (`--mlir-print-op-generic`), because `mlir-opt` doesn't know the Toy dialect and parses its ops only as unregistered ones (`--allow-unregistered-dialect`):
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+S=$(mktemp -d)
+cat > "$S"/hand.mlir <<'EOF'
+func.func @main() {
+  %mul_buf = memref.alloc() : memref<3x2xf64>
+  %trans_buf = memref.alloc() : memref<3x2xf64>
+  %const_buf = memref.alloc() : memref<2x3xf64>
+  %v1 = arith.constant 1.0 : f64
+  affine.store %v1, %const_buf[0, 0] : memref<2x3xf64>
+  %v2 = arith.constant 2.0 : f64
+  affine.store %v2, %const_buf[0, 1] : memref<2x3xf64>
+  %v3 = arith.constant 3.0 : f64
+  affine.store %v3, %const_buf[0, 2] : memref<2x3xf64>
+  %v4 = arith.constant 4.0 : f64
+  affine.store %v4, %const_buf[1, 0] : memref<2x3xf64>
+  %v5 = arith.constant 5.0 : f64
+  affine.store %v5, %const_buf[1, 1] : memref<2x3xf64>
+  %v6 = arith.constant 6.0 : f64
+  affine.store %v6, %const_buf[1, 2] : memref<2x3xf64>
+  affine.for %i = 0 to 3 {
+    affine.for %j = 0 to 2 {
+      %e = affine.load %const_buf[%j, %i] : memref<2x3xf64>
+      affine.store %e, %trans_buf[%i, %j] : memref<3x2xf64>
+    }
+  }
+  affine.for %i = 0 to 3 {
+    affine.for %j = 0 to 2 {
+      %a = affine.load %trans_buf[%i, %j] : memref<3x2xf64>
+      %p = arith.mulf %a, %a : f64
+      affine.store %p, %mul_buf[%i, %j] : memref<3x2xf64>
+    }
+  }
+  "toy.print"(%mul_buf) : (memref<3x2xf64>) -> ()
+  memref.dealloc %const_buf : memref<2x3xf64>
+  memref.dealloc %trans_buf : memref<3x2xf64>
+  memref.dealloc %mul_buf : memref<3x2xf64>
+  return
+}
+EOF
+mlir-opt --allow-unregistered-dialect --canonicalize --cse "$S"/hand.mlir > "$S"/hand.out
+./build/toyc-ch5 ../../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir-affine --mlir-print-op-generic 2>&1 \
+  | mlir-opt --allow-unregistered-dialect > "$S"/toyc.out
+diff "$S"/hand.out "$S"/toyc.out && echo "same IR as toyc-ch5 -emit=mlir-affine"
+rm -rf "$S"
+```
+
+Real output **[18]**:
+
+```text
+same IR as toyc-ch5 -emit=mlir-affine
+```
+
+- The hand-written IR is the pass's result: `diff` finds no difference, so the design of every pattern is settled before it has a line of C++, and `mlir-opt`'s verifier has checked every op of it.
+- The hand-written IR is not literally what the pass emits. The pass writes constant indices as `arith.constant ... : index` values and loads the operand of `toy.mul %2, %2` twice (section 4.1 shows that raw output); `canonicalize` folds the indices into the store maps and hoists the scalar constants, and `cse` merges the two loads, which brings both sides to the same form.
+
+**A pattern only has to emit correct IR, not tidy IR: the cleanup passes after it produce the tidy form.** That keeps each pattern small and local, as `lowerOpToLoops` and `ConstantOpLowering` are.
+
+### 7.4 Step 4: turn each line of the IR into a builder call
+
+Each line of the section 7.3 IR becomes one `create<OpTy>(loc, ...)` call in a pattern. The real code is in section 3; side by side:
+
+| Hand-written IR (section 7.3) | C++ | Section |
+|---|---|---|
+| `memref.alloc() : memref<3x2xf64>` at the top | `rewriter.create<memref::AllocOp>(loc, type)`, then `moveBefore(&parentBlock->front())` | 3.2 |
+| `memref.dealloc` before `return` | `rewriter.create<memref::DeallocOp>(loc, alloc)`, then `moveBefore(&parentBlock->back())` | 3.2 |
+| `arith.constant 1.0 : f64` + `affine.store %v1, %const_buf[0, 0]` | `rewriter.create<affine::AffineStoreOp>(loc, rewriter.create<arith::ConstantOp>(loc, *valueIt++), alloc, llvm::ArrayRef(indices))`, the indices being `arith::ConstantIndexOp`s | 3.6 |
+| `affine.for %i = 0 to 3 { affine.for %j = 0 to 2 {` | `affine::buildAffineLoopNest(rewriter, loc, lowerBounds, tensorType.getShape(), steps, ...)` | 3.3 |
+| `affine.store %e, %trans_buf[%i, %j]` at the end of each nest | `nestedBuilder.create<affine::AffineStoreOp>(loc, valueToStore, alloc, ivs)` | 3.3 |
+| `affine.load %const_buf[%j, %i]` | `builder.create<affine::AffineLoadOp>(loc, input, reverseIvs)` | 3.4 |
+| `affine.load %trans_buf[%i, %j]` + `arith.mulf %a, %a` | two `builder.create<affine::AffineLoadOp>(loc, ..., loopIvs)` + `builder.create<LoweredBinaryOp>(loc, loadedLhs, loadedRhs)` | 3.5 |
+| `func.func @main()` / `return` | `rewriter.create<mlir::func::FuncOp>(op.getLoc(), op.getName(), op.getFunctionType())` + `inlineRegionBefore` / `rewriter.replaceOpWithNewOp<func::ReturnOp>(op)` | 3.7 |
+| `"toy.print"(%mul_buf)` | the same op, operands swapped in `rewriter.modifyOpInPlace` | 3.8 |
+
+What the C++ adds over the hand-written IR is generality: the bounds come from the tensor's shape, the loop nest has one loop per dimension, and the loop nest, buffer and final store are shared by transpose, add and mul through `lowerOpToLoops`, so each pattern only supplies the value to store.
+
+**Which arguments `create` takes.** `rewriter.create<OpTy>(loc, args...)` calls `OpTy::build(builder, state, args...)`, so the `build` overloads of the op's class are the menu, and `mlir-tblgen` prints them. The loop nest has no single op to build; its helper is a plain function, declared in `AffineOps.h`:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+I=/opt/homebrew/opt/llvm@20/include
+mlir-tblgen -gen-op-decls -I $I $I/mlir/Dialect/Affine/IR/AffineOps.td \
+  | awk '/^class AffineLoadOp :/,/^};/' | grep 'static void build' | head -3
+mlir-tblgen -gen-op-decls -I $I $I/mlir/Dialect/Affine/IR/AffineOps.td \
+  | awk '/^class AffineStoreOp :/,/^};/' | grep 'static void build'
+sed -n '/^void buildAffineLoopNest/,/;$/p' $I/mlir/Dialect/Affine/IR/AffineOps.h
+```
+
+Real output **[19]**:
+
+```text
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, AffineMap map, ValueRange operands);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, Value memref, ValueRange indices = {});
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, Value memref, AffineMap map, ValueRange mapOperands);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, Value valueToStore, Value memref, ValueRange indices);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, Value valueToStore, Value memref, AffineMap map, ValueRange mapOperands);
+void buildAffineLoopNest(OpBuilder &builder, Location loc,
+                         ArrayRef<int64_t> lbs, ArrayRef<int64_t> ubs,
+                         ArrayRef<int64_t> steps,
+                         function_ref<void(OpBuilder &, Location, ValueRange)>
+                             bodyBuilderFn = nullptr);
+void buildAffineLoopNest(OpBuilder &builder, Location loc, ValueRange lbs,
+                         ValueRange ubs, ArrayRef<int64_t> steps,
+                         function_ref<void(OpBuilder &, Location, ValueRange)>
+                             bodyBuilderFn = nullptr);
+```
+
+- `AffineLoadOp`'s second builder, `(Value memref, ValueRange indices = {})`, builds the identity map from the indices; that is the one sections 3.4 and 3.5 use (`head -3` drops the all-attributes builders that follow the hand-written ones). `AffineStoreOp`'s first builder is the same with the value to store in front.
+- `buildAffineLoopNest` comes in two forms: constant bounds (`ArrayRef<int64_t>`) and SSA bounds (`ValueRange`). Toy shapes are static, so `lowerOpToLoops` uses the constant form, and the body callback gets the induction variables as a `ValueRange` (section 3.3).
+
+### 7.5 Step 5: the pass skeleton, the conversion API and the driver
+
+The framework's pieces are declared in one header, `mlir/Transforms/DialectConversion.h`, the one the file includes for them:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+I=/opt/homebrew/opt/llvm@20/include/mlir/Transforms/DialectConversion.h
+grep -nE '^class (ConversionTarget|ConversionPattern|OpConversionPattern) |apply(Partial|Full)Conversion\(Operation \*op|^  void addDynamicallyLegalOp\(const' $I
+```
+
+Real output **[20]**:
+
+```text
+534:class ConversionPattern : public RewritePattern {
+618:class OpConversionPattern : public ConversionPattern {
+940:class ConversionTarget {
+1006:  void addDynamicallyLegalOp(const DynamicLegalityCallbackFn &callback) {
+1011:  void addDynamicallyLegalOp(const DynamicLegalityCallbackFn &callback) {
+1338:applyPartialConversion(Operation *op, const ConversionTarget &target,
+1350:LogicalResult applyFullConversion(Operation *op, const ConversionTarget &target,
+```
+
+These are the four ingredients of section 2: the target and its dynamic legality (section 2.1), the two pattern base classes (section 3.1), and the two drivers (section 4.1). The pass around them is Chapter 4's shape-inference pass, rewired. Its skeleton lines and the pipeline, in both chapters:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+grep -nE 'PassWrapper<|getDependentDialects|void runOnOperation|std::make_unique<' \
+  ../Ch4/mlir/ShapeInferencePass.cpp mlir/LowerToAffineLoops.cpp
+grep -n 'create[A-Za-z]*Pass()' ../Ch4/toyc.cpp toyc.cpp
+diff ../Ch4/include/toy/Passes.h include/toy/Passes.h
+```
+
+Real output **[21]** (exit status 1 — `diff` exits 1 when the files differ):
+
+```text
+../Ch4/mlir/ShapeInferencePass.cpp:56:    : public mlir::PassWrapper<ShapeInferencePass, OperationPass<toy::FuncOp>> {
+../Ch4/mlir/ShapeInferencePass.cpp:60:  void runOnOperation() override {
+../Ch4/mlir/ShapeInferencePass.cpp:122:  return std::make_unique<ShapeInferencePass>();
+mlir/LowerToAffineLoops.cpp:329:    : public PassWrapper<ToyToAffineLoweringPass, OperationPass<ModuleOp>> {
+mlir/LowerToAffineLoops.cpp:333:  void getDependentDialects(DialectRegistry &registry) const override {
+mlir/LowerToAffineLoops.cpp:337:  void runOnOperation() final;
+mlir/LowerToAffineLoops.cpp:383:  return std::make_unique<ToyToAffineLoweringPass>();
+../Ch4/toyc.cpp:129:    pm.addPass(mlir::createInlinerPass());
+../Ch4/toyc.cpp:134:    optPM.addPass(mlir::toy::createShapeInferencePass());
+../Ch4/toyc.cpp:135:    optPM.addPass(mlir::createCanonicalizerPass());
+../Ch4/toyc.cpp:136:    optPM.addPass(mlir::createCSEPass());
+toyc.cpp:140:    pm.addPass(mlir::createInlinerPass());
+toyc.cpp:145:    optPM.addPass(mlir::toy::createShapeInferencePass());
+toyc.cpp:146:    optPM.addPass(mlir::createCanonicalizerPass());
+toyc.cpp:147:    optPM.addPass(mlir::createCSEPass());
+toyc.cpp:152:    pm.addPass(mlir::toy::createLowerToAffinePass());
+toyc.cpp:156:    optPM.addPass(mlir::createCanonicalizerPass());
+toyc.cpp:157:    optPM.addPass(mlir::createCSEPass());
+toyc.cpp:161:      optPM.addPass(mlir::affine::createLoopFusionPass());
+toyc.cpp:162:      optPM.addPass(mlir::affine::createAffineScalarReplacementPass());
+22a23,27
+> 
+> /// Create a pass for lowering to operations in the `Affine` and `Std` dialects,
+> /// for a subset of the Toy IR (e.g. matmul).
+> std::unique_ptr<mlir::Pass> createLowerToAffinePass();
+> 
+```
+
+- **The pass:** the same `PassWrapper` and `std::make_unique` factory, with two changes section 4.2 explains: it runs on `ModuleOp` instead of `toy::FuncOp`, because it replaces `toy.func` itself, and it adds `getDependentDialects`, because it creates ops from dialects the input doesn't use.
+- **`Passes.h`:** the new factory is declared exactly like `createShapeInferencePass()` next to it.
+- **`toyc.cpp`:** the Chapter 4 passes stay; the lowering is added after them, followed by a cleanup on `func::FuncOp` and, under `-opt`, the two affine passes (section 5). The two affine factories are found the same way as the conversions: in the dialect's `Passes.h` (`mlir/Dialect/Affine/Passes.h`).
+
+### 7.6 Step 6: let the verifier find the `Ops.td` change
+
+The patterns lower everything except `toy.print`, whose operand becomes a memref (section 3.8). With Chapter 4's `PrintOp`, which accepts only `F64Tensor`, that op no longer verifies. A scratch copy with Chapter 4's operand type put back (by `sed`, in a temporary directory; the build takes about 10 seconds) shows the error that asks for the change:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+S=$(mktemp -d)
+cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
+sed -i '' 's/let arguments = (ins AnyTypeOf<\[F64Tensor, F64MemRef\]>:\$input);/let arguments = (ins F64Tensor:$input);/' "$S"/include/toy/Ops.td
+cmake -S "$S" -B "$S"/build -G Ninja >/dev/null && cmake --build "$S"/build >/dev/null
+"$S"/build/toyc-ch5 ../../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir-affine 2>&1; echo "toyc-ch5 exit status: $?"
+rm -rf "$S"
+```
+
+Real output **[22]**:
+
+```text
+../../test_Example/Toy/Ch5/affine-lowering.mlir:8:3: error: 'toy.print' op operand #0 must be tensor of 64-bit float values, but got 'memref<3x2xf64>'
+  toy.print %3 : tensor<3x2xf64>
+  ^
+../../test_Example/Toy/Ch5/affine-lowering.mlir:8:3: note: see current operation: "toy.print"(%0) : (memref<3x2xf64>) -> ()
+toyc-ch5 exit status: 4
+```
+
+- The verifier names the op, the operand, the constraint (`tensor of 64-bit float values`) and the type it got (`memref<3x2xf64>`): exactly the gap that `AnyTypeOf<[F64Tensor, F64MemRef]>` closes (section 4.3).
+- The pipeline fails, so the driver exits with 4 without dumping the module (section 4.1).
+
+### 7.7 Step 7: let the conversion show which passes must run first
+
+The new action `-emit=mlir-affine` (section 5) runs the Chapter 4 passes even without `-opt`: `if (enableOpt || isLoweringToAffine)`. What happens without that `||` shows why. A scratch copy where only `-opt` turns them on (patched by `sed`; the build takes about 15 seconds) lowers a Toy program with two functions:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch5
+S=$(mktemp -d)
+cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
+sed -i '' 's/if (enableOpt || isLoweringToAffine) {/if (enableOpt) {/' "$S"/toyc.cpp
+cmake -S "$S" -B "$S"/build -G Ninja >/dev/null && cmake --build "$S"/build >/dev/null
+"$S"/build/toyc-ch5 ../../test_Example/Toy/Ch5/codegen.toy -emit=mlir-affine 2>&1; echo "toyc-ch5 exit status: $?"
+rm -rf "$S"
+```
+
+Real output **[23]**:
+
+```text
+../../test_Example/Toy/Ch5/codegen.toy:4:1: error: failed to legalize operation 'toy.func' that was explicitly marked illegal
+def multiply_transpose(a, b) {
+^
+../../test_Example/Toy/Ch5/codegen.toy:4:1: note: see current operation: 
+"toy.func"() <{function_type = (tensor<*xf64>, tensor<*xf64>) -> tensor<*xf64>, sym_name = "multiply_transpose"}> ({
+^bb0(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>):
+  %0 = "toy.transpose"(%arg0) : (tensor<*xf64>) -> tensor<*xf64>
+  %1 = "toy.transpose"(%arg1) : (tensor<*xf64>) -> tensor<*xf64>
+  %2 = "toy.mul"(%0, %1) : (tensor<*xf64>, tensor<*xf64>) -> tensor<*xf64>
+  "toy.return"(%2) : (tensor<*xf64>) -> ()
+}) {sym_visibility = "private"} : () -> ()
+toyc-ch5 exit status: 4
+```
+
+- **The function is still there:** without the inliner, `multiply_transpose` survives next to `main`, and `FuncOpLowering` lowers only `main` (section 3.7), so `toy.func`, illegal in the target (section 2.1), stays and the conversion fails.
+- **Its types are unranked:** every value is `tensor<*xf64>`, and only shape inference, which needs the inlined `main`, turns them into ranked tensors that `convertTensorToMemRef` can map to memrefs (section 3.2).
+
+So the condition makes the Chapter 4 passes part of the lowering, not an optimization; the new `DumpMLIRAffine` action follows `DumpMLIR` in the `Action` enum so that `emitAction >= Action::DumpMLIRAffine` can test for it (section 5).
+
+## 8. Key Takeaways & Pitfalls
 
 **Takeaways**
 
@@ -1261,12 +1602,13 @@ None of this was expressible before lowering: it is the payoff for descending to
 5. **Dynamic legality (`addDynamicallyLegalOp`) is the idiom for "keep this op but fix its operands"** — pair it with an in-place pattern (`modifyOpInPlace` + `setOperands`) and a loosened ODS type constraint (`AnyTypeOf<[F64Tensor, F64MemRef]>`).
 6. **Factor loop-nest lowering** (`lowerOpToLoops` + a per-iteration callback) so element-wise ops differ only in their innermost expression; transpose is just "load with reversed ivs".
 7. **Lowering unlocks reuse**: two off-the-shelf passes (`affine-loop-fusion`, `affine-scalrep`) removed a loop nest and a whole buffer without knowing anything about Toy. That reuse is the entire point of lowering into *shared* dialects rather than straight to LLVM.
+8. **A pattern only has to emit correct IR, not tidy IR** (section 7): write the target IR by hand, check it with stock `mlir-opt`, and let `canonicalize` and `cse` after the pass fold the index constants and merge the duplicate loads the patterns emit.
 
 **Pitfalls**
 
 - **Forgetting `getDependentDialects`.** The pass creates `affine`/`memref`/`func` ops in a context that only has `toy` loaded → ``LLVM ERROR: Building op `func.func` but it isn't known in this MLIRContext: the dialect may not be loaded ...`` and an abort (run in section 4.2). Declare every dialect your pass *creates* ops from.
 - **Nesting post-lowering passes on the wrong function op.** Before lowering it's `pm.nest<toy::FuncOp>()`, after it must be `pm.nest<func::FuncOp>()` — get it wrong and the passes silently do nothing.
-- **Order matters in the driver.** Inlining and shape inference are *prerequisites* of this lowering, not optimizations: `FuncOpLowering` rejects non-`main` functions, `ReturnOpLowering` rejects returns with operands, and `convertTensorToMemRef` requires ranked, static shapes. That's why `-emit=mlir-affine` forces those passes even without `-opt`.
+- **Order matters in the driver.** Inlining and shape inference are *prerequisites* of this lowering, not optimizations: `FuncOpLowering` rejects non-`main` functions, `ReturnOpLowering` rejects returns with operands, and `convertTensorToMemRef` requires ranked, static shapes. That's why `-emit=mlir-affine` forces those passes even without `-opt` (run in section 7.7).
 - **Reading operands from the op inside a ConversionPattern.** You'll get the old tensor-typed values and build ill-typed IR (e.g. `affine.load` from a `tensor`). Always go through `operands`/`OpAdaptor`.
 - **Mutating an op without telling the rewriter.** In a conversion, direct mutation corrupts the driver's rollback tracking — wrap in-place updates in `rewriter.modifyOpInPlace(...)` as `PrintOpLowering` does.
 - **Expecting `notifyMatchFailure` text in the error.** In this release build a failed pattern surfaces only as "failed to legalize operation ..." (section 3.7); the reason is visible only in a debug build.
@@ -1290,7 +1632,7 @@ cd /Users/roy/study/mlir/toy/Ch5
   && echo "both checks pass"
 ```
 
-Real output **[15]**:
+Real output **[24]**:
 
 ```text
 both checks pass
@@ -1311,7 +1653,7 @@ diff <(./build/toyc-ch5 ../../test_Example/Toy/Ch5/codegen.toy -emit=mlir-affine
   && echo "identical lowerings"
 ```
 
-Real output **[16]**:
+Real output **[25]**:
 
 ```text
 identical lowerings
@@ -1324,7 +1666,7 @@ cd /Users/roy/study/mlir/toy/Ch5
 ./build/toyc-ch5 ../../test_Example/Toy/Ch5/scalar.toy -emit=mlir-affine -opt 2>&1
 ```
 
-Real output **[17]**:
+Real output **[26]**:
 
 ```mlir
 module {
@@ -1348,7 +1690,7 @@ module {
 
 ## Appendix B: The ecosystem view — reproduce `-opt` with stock `mlir-opt`
 
-Takeaway 7 (section 7) says the two optimization passes know nothing about Toy — you can prove it. Print the naive lowering in *generic form* (so the one remaining `toy.print` becomes an opaque `"toy.print"(...)` that stock `mlir-opt` will tolerate — Ch2 appendix C.2) and pipe it through the Homebrew `mlir-opt` with the same two passes `toyc-ch5 -opt` schedules:
+Takeaway 7 (section 8) says the two optimization passes know nothing about Toy — you can prove it. Print the naive lowering in *generic form* (so the one remaining `toy.print` becomes an opaque `"toy.print"(...)` that stock `mlir-opt` will tolerate — Ch2 appendix C.2) and pipe it through the Homebrew `mlir-opt` with the same two passes `toyc-ch5 -opt` schedules:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch5
@@ -1358,7 +1700,7 @@ cd /Users/roy/study/mlir/toy/Ch5
 
 The output is identical to run 3 (section 6.2) — one fused loop nest, two buffers, the intermediate `memref<3x2xf64>` gone — except that the print passes through untouched as an unregistered op.
 
-Real output **[18]** (abridged to the print):
+Real output **[27]** (abridged to the print):
 
 ```mlir
     "toy.print"(%alloc) : (memref<3x2xf64>) -> ()
@@ -1374,7 +1716,7 @@ cd /Users/roy/study/mlir/toy/Ch5
   | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect --affine-loop-fusion
 ```
 
-Real output **[19]** (abridged to the fused nest; the three allocs, constant stores, and three deallocs are the same as in run 2 of section 6.2):
+Real output **[28]** (abridged to the fused nest; the three allocs, constant stores, and three deallocs are the same as in run 2 of section 6.2):
 
 ```mlir
     affine.for %arg0 = 0 to 3 {
@@ -1389,8 +1731,6 @@ Real output **[19]** (abridged to the fused nest; the three allocs, constant sto
 ```
 
 The store-then-reload through `%alloc_5` is exactly what `affine-scalrep` forwards and deletes (section 6.3, step 2).
-
----
 
 ---
 
@@ -1424,14 +1764,14 @@ cd /Users/roy/study/mlir/toy/Ch5
 ./examples.sh -l
 ```
 
-Real output **[20]** (abridged):
+Real output **[29]** (abridged):
 
 ```text
 [ 1] 3.2   ./build/toyc-ch5 ../../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir-affine 2>&1 | grep -E 'memref\.(alloc|dealloc)'
 [ 2] 3.4   ./build/toyc-ch5 - -x mlir -emit=mlir-affine <<'EOF' 2>&1
 ...
-[19] B     ./build/toyc-ch5 ../../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir-affine -mlir-print-op-generic 2>&1 \
-[20] D     ./examples.sh -l
+[28] B     ./build/toyc-ch5 ../../test_Example/Toy/Ch5/affine-lowering.mlir -emit=mlir-affine -mlir-print-op-generic 2>&1 \
+[29] D     ./examples.sh -l
 ```
 
 The script reads the commands from `README.md` on every run. A command is every `bash` code block in file order, except the build block (its first command after `cd` is `cmake`) and file excerpts (a `***path***` label above the fence). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". So adding, removing or reordering a command block renumbers the ones after it, and their **[N]** labels must be updated to match.

@@ -78,15 +78,18 @@ numbers (they shift); it cites sections.
    If upstream runs commands in the middle of a chapter, show that run at the
    upstream spot using the real-output scheme above (code, exact command, output);
    Build and Run keeps the complete end-to-end runs.
-4. Key Takeaways & Pitfalls
-5. Lettered appendices, `## Appendix A: ...`, `## Appendix B: ...`, with `### A.1`
+4. **Deriving ... yourself** (Ch2–Ch7) — how to arrive at the chapter's new code
+   without having it (see "Main path vs appendices" below)
+5. Key Takeaways & Pitfalls
+6. Lettered appendices, `## Appendix A: ...`, `## Appendix B: ...`, with `### A.1`
    subsections (see "Main path vs appendices" below)
-6. Links
+7. Links
 
 ## Main path vs appendices
 
-- Sections 1–7 carry the **essential path**: upstream's topics, in upstream's order,
-  plus what this repo needs to make them concrete (e.g. MLIRGen in Ch2).
+- The numbered sections carry the **essential path**: upstream's topics, in
+  upstream's order, plus what this repo needs to make them concrete (e.g. MLIRGen in
+  Ch2), then the "Deriving ... yourself" section.
 - **Reference material and extras** go to lettered appendices: per-item references
   beyond upstream's worked example (Ch2: the other eight ops), file-wide recaps (a
   map of `Ops.td`, its fields, the generated code), printing/tool details, more
@@ -94,6 +97,17 @@ numbers (they shift); it cites sections.
   The Overview says in one paragraph what each appendix holds. Ch2's layout: A other
   ops, B `Ops.td` and `Dialect.cpp` as a whole, C printing details and stock `mlir-opt`, D more
   inputs, E build, F `examples.sh`.
+- **The "Deriving ... yourself" section** (Ch2–Ch7; model: Ch6 section 5) is the
+  last numbered section before Key Takeaways & Pitfalls, after Build and Run, and
+  covers the chapter's new files and its major changes to existing ones. It is the
+  one numbered section with no upstream counterpart. It shows how to arrive at the
+  code without having it: a table (each part of the file → where it comes from),
+  then numbered subsections ("Step 1: ...") that each run a discovery tool (what is
+  left to lower, `mlir-opt --help`, a `grep` of the installed headers, `mlir-tblgen`
+  for builders and declarations), write the target IR by hand and check it with
+  stock tools, or show a verifier error that forces a detail. It points to the
+  earlier sections for the explanations instead of repeating them, and Key Takeaways
+  has one item for its insight.
 - The main path points to an appendix in one phrase ("appendix A.3") instead of
   repeating it; appendices point back to the main section they extend.
 - **Show each listing and run once.** If two sections need the same input file or

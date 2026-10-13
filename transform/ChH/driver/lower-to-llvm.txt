@@ -1,0 +1,20 @@
+builtin.module(
+  func.func(scf-forall-to-for, buffer-loop-hoisting),
+  math-uplift-to-fma,
+  convert-bufferization-to-memref,
+  func.func(convert-vector-to-scf, convert-linalg-to-loops),
+  lower-affine,
+  convert-scf-to-cf,
+  canonicalize,
+  cse,
+  convert-vector-to-llvm,
+  func.func(convert-math-to-llvm),
+  expand-strided-metadata,
+  lower-affine,
+  finalize-memref-to-llvm,
+  convert-func-to-llvm,
+  convert-arith-to-llvm,
+  convert-cf-to-llvm,
+  convert-index-to-llvm,
+  reconcile-unrealized-casts
+)

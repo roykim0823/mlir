@@ -5,7 +5,7 @@
 > **Read this first if your Ch6 binary segfaults:** this repo hit (and documents) a real macOS
 > linking pitfall where mixing static `.a` MLIR libraries with `libMLIR.dylib` causes a
 > **TypeID-duplication segfault** inside `StorageUniquer` on *any* pass run. See
-> section 5, the link line in appendix C.2, and the full write-up in
+> section 6, the link line in appendix C.2, and the full write-up in
 > [MLIR_LINKING_PITFALL.md](MLIR_LINKING_PITFALL.md).
 
 ---
@@ -48,13 +48,15 @@ Three ideas are worth internalizing before reading the code:
 2. **Full conversion vs. partial conversion.** Chapter 5 used `applyPartialConversion` (unknown ops may survive). Here we use `applyFullConversion`: after the pass, *only* LLVM-dialect operations (plus the top-level `builtin.module`) may remain. Anything else is a hard error.
 3. **The LLVM dialect is still MLIR.** `-emit=mlir-llvm` prints MLIR operations (`llvm.func`, `llvm.call`, `llvm.br`, …) that model LLVM IR 1:1. A separate *translation* step (`translateModuleToLLVMIR`) — not a dialect conversion — produces an actual `llvm::Module`. From that point on we are in classic LLVM land: optimization pipelines, target machines, ORC JIT.
 
+After Build and Run, section 5 shows how to derive the chapter's code yourself: `LowerToLLVM.cpp` from the dialects left to lower to the builder calls, then the driver's new stages and the link line.
+
 The appendices hold the extras: more runs — the `llvm-lowering.mlir` example through the JIT and FileCheck, more inputs (A), replacing the backend with stock tools (B), what Chapter 6 adds to the build (C), and the script that runs every command in this README (D).
 
 ---
 
 ## 2. Lowering to LLVM
 
-For this lowering we use the dialect conversion framework again, but this time for a **full** conversion to the LLVM dialect. Everything except `toy.print` was already lowered in Chapter 5, so the chapter first lowers `toy.print` (2.1–2.3) and then assembles the usual three components — conversion target, type converter, patterns — plus the conversion call (2.4–2.7). All code below is the real code from `mlir/LowerToLLVM.cpp` unless labeled otherwise.
+For this lowering we use the dialect conversion framework again, but this time for a **full** conversion to the LLVM dialect. Everything except `toy.print` was already lowered in Chapter 5, so the chapter first lowers `toy.print` (2.1–2.3) and then assembles the usual three components — conversion target, type converter, patterns — plus the conversion call (2.4–2.7). All code below is the real code from `mlir/LowerToLLVM.cpp` unless labeled otherwise; section 5 shows how to arrive at this file without having it.
 
 ### 2.1 Lowering `toy.print` first — transitive lowering and the pattern skeleton
 
@@ -978,7 +980,7 @@ In the next chapter we will leave primitive data types behind and add a composit
 
 The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 6 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — the ExecutionEngine guard and the shared-only link line — is in appendix C.
 
-Every command in this README is numbered by its output (**[1]**–**[23]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix D).
+Every command in this README is numbered by its output (**[1]**–**[33]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix D).
 
 ### 4.1 Building
 
@@ -1295,7 +1297,409 @@ Real output **[16]**:
 
 The ExecutionEngine JIT-compiled `main` to AArch64 code, `invokePacked("main")` called it, the JIT resolved `printf`/`malloc`/`free` against the host libc — and the Toy program printed its matrix (section 3.2). End-to-end: source text to executed native code in one process, no files written. `-emit=jit -opt` prints the same thing. (Each line really ends in a space, from the `"%f "` format string.) Section 3.2 runs the same program on stdin.
 
-## 5. Key Takeaways & Pitfalls
+---
+
+## 5. Deriving the Chapter 6 lowering, driver and build yourself
+
+Section 2 explains `mlir/LowerToLLVM.cpp` as it is, section 3 the driver code that exports and runs its output, and appendix C the build. This section shows how to arrive at them without having the code. `mlir/LowerToLLVM.cpp` is the chapter's only new source, and most of it is assembled from parts that MLIR or Chapter 5 already has; only the lowering of `toy.print` has to be designed. The other changes are edits to existing files:
+
+| Part | Lines | Where it comes from |
+|---|---|---|
+| `mlir/LowerToLLVM.cpp`: header comment and `#include`s | 1–55 | One header per `populate*` function (section 5.2) and per dialect whose ops the file creates |
+| `mlir/LowerToLLVM.cpp`: `PrintOpLowering` | 61–177 | The IR you want for `toy.print`, written by hand first (section 5.3), then turned into builder calls (section 5.4) |
+| `mlir/LowerToLLVM.cpp`: `ToyToLLVMLoweringPass` and its `runOnOperation` | 183–241 | Chapter 5's pass skeleton (section 5.5), with the six `populate*` calls of section 5.2 |
+| `include/toy/Passes.h`: `createLowerToLLVMPass()` | 28–30 | Chapter 5's `createLowerToAffinePass()`, copied (section 5.5) |
+| `toyc.cpp`: the `isLoweringToLLVM` stage and its two extra passes | 157, 187–205 | The stock `mlir-opt` passes, tried first (section 5.6) |
+| `toyc.cpp`: the three new `-emit` actions, `dumpLLVMIR`, `runJit`, the LLVM inliner registration, and their `#include`s | 13–55, 75–96, 226–301, 317, 327–340 | Stock `mlir-runner` and `mlir-translate`, which do the same from the command line (section 5.6), then one header per API (section 5.7) |
+| `CMakeLists.txt`: the ExecutionEngine guard and the new link line | 36–39, 66–73 | The linker's undefined symbols and the installed MLIR CMake package (section 5.8) |
+
+`include/toy/Ops.td` differs from Chapter 5 too, but only in the order of `ReshapeOp`'s fields; it generates the same C++ (section 5.5).
+
+The steps below use the working example of section 2.7, `llvm-lowering.mlir`, because its transpose and multiply leave `affine` loops behind for the lowering to handle.
+
+### 5.1 Step 1: list what is left to lower
+
+The input of the new pass is the output of Chapter 5's pipeline, `-emit=mlir-affine`. The generic printer (`--mlir-print-op-generic`) writes every op under its full quoted name (`"func.return"` instead of `return`), so `grep` can count them:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+./build/toyc-ch6 ../../test_Example/Toy/Ch6/llvm-lowering.mlir -emit=mlir-affine --mlir-print-op-generic 2>&1 \
+  | grep -oE '"[a-z_]+\.[a-z_]+"' | sort | uniq -c
+```
+
+Real output **[17]**:
+
+```text
+   4 "affine.for"
+   2 "affine.load"
+   8 "affine.store"
+   4 "affine.yield"
+   6 "arith.constant"
+   1 "arith.mulf"
+   1 "builtin.module"
+   1 "func.func"
+   1 "func.return"
+   3 "memref.alloc"
+   3 "memref.dealloc"
+   1 "toy.print"
+```
+
+- Apart from `builtin.module`, which stays legal (section 2.4), five dialects are left: `affine`, `arith`, `func`, `memref`, and `toy`. Each needs a path to `llvm`.
+- `toy.print` is the only Toy op, so it is the only pattern this file has to write itself (section 2.1).
+- Two more dialects join on the way: `affine` lowers to `scf` loops (as `toy.print` will), and `scf` lowers to `cf` (control flow) branches. They need paths to `llvm` too, which gives the six edges of section 2.6.
+
+### 5.2 Step 2: find the stock conversion for each dialect
+
+MLIR ships a pass for each of these edges. `mlir-opt` lists them:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+mlir-opt --help | grep -E -- '--(lower-affine|convert-scf-to-cf|convert-arith-to-llvm|finalize-memref-to-llvm|convert-cf-to-llvm|convert-func-to-llvm) '
+```
+
+Real output **[18]**:
+
+```text
+      --convert-arith-to-llvm                                -   Convert Arith dialect to LLVM dialect
+      --convert-cf-to-llvm                                   -   Convert ControlFlow operations to the LLVM dialect
+      --convert-func-to-llvm                                 -   Convert from the Func dialect to the LLVM dialect
+      --convert-scf-to-cf                                    -   Convert SCF dialect to ControlFlow dialect, replacing structured control flow with a CFG
+      --finalize-memref-to-llvm                              -   Finalize MemRef dialect to LLVM dialect conversion
+      --lower-affine                                         -   Lower Affine operations to a combination of Standard and SCF operations
+```
+
+Each pass is a thin wrapper around a `populate…Patterns` function that adds its patterns to a `RewritePatternSet`; that function is what a C++ pass can reuse. It is declared in a header under `include/mlir/Conversion/`, in a directory named after the edge:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+I=/opt/homebrew/opt/llvm@20/include/mlir/Conversion
+for d in AffineToStandard SCFToControlFlow ArithToLLVM MemRefToLLVM ControlFlowToLLVM FuncToLLVM; do
+  grep -h -A1 'void populate' $I/$d/*.h
+done
+```
+
+Real output **[19]**:
+
+```text
+void populateAffineToStdConversionPatterns(RewritePatternSet &patterns);
+
+--
+void populateAffineToVectorConversionPatterns(RewritePatternSet &patterns);
+
+void populateSCFToControlFlowConversionPatterns(RewritePatternSet &patterns);
+
+void populateArithToLLVMConversionPatterns(const LLVMTypeConverter &converter,
+                                           RewritePatternSet &patterns);
+void populateFinalizeMemRefToLLVMConversionPatterns(
+    const LLVMTypeConverter &converter, RewritePatternSet &patterns);
+void populateControlFlowToLLVMConversionPatterns(
+    const LLVMTypeConverter &converter, RewritePatternSet &patterns);
+--
+void populateAssertToLLVMConversionPattern(const LLVMTypeConverter &converter,
+                                           RewritePatternSet &patterns,
+void populateFuncToLLVMFuncOpConversionPattern(
+    const LLVMTypeConverter &converter, RewritePatternSet &patterns);
+--
+void populateFuncToLLVMConversionPatterns(
+    const LLVMTypeConverter &converter, RewritePatternSet &patterns,
+```
+
+- The six functions in section 2.6 are here, one per directory; the extra ones (`populateAffineToVectorConversionPatterns`, the `assert` and `func.func`-only patterns) cover other edges or a subset of one.
+- The signatures show which pattern sets need the type converter of section 2.5: the four that end in LLVM take a `const LLVMTypeConverter &`, while `affine`→`scf` and `scf`→`cf` take only the pattern set.
+- Each directory's header is one of the file's `#include`s (`mlir/Conversion/AffineToStandard/AffineToStandard.h`, …).
+
+### 5.3 Step 3: write `toy.print`'s target IR by hand and test the lowering with stock tools
+
+Only `toy.print` has no stock conversion. Before writing any C++, write the IR it should become, for the `memref<3x2xf64>` that `toy.print` receives in this example: a `printf` declaration and two format strings at module level, and a loop nest that loads each element and prints it, with a newline after each row. Then test it: splice that IR into the `-emit=mlir-affine` output in place of `toy.print`, lower the result with the six stock passes of section 5.2, and run it. `DECLS` goes right after `module {`, `PRINT` replaces the `toy.print` line:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+export DECLS='  llvm.func @printf(!llvm.ptr, ...) -> i32
+  llvm.mlir.global internal constant @frmt_spec("%f \00") {addr_space = 0 : i32}
+  llvm.mlir.global internal constant @nl("\0A\00") {addr_space = 0 : i32}'
+export PRINT='    %fmt_addr = llvm.mlir.addressof @frmt_spec : !llvm.ptr
+    %zero = llvm.mlir.constant(0 : index) : i64
+    %fmt = llvm.getelementptr %fmt_addr[%zero, %zero] : (!llvm.ptr, i64, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+    %nl_addr = llvm.mlir.addressof @nl : !llvm.ptr
+    %nl = llvm.getelementptr %nl_addr[%zero, %zero] : (!llvm.ptr, i64, i64) -> !llvm.ptr, !llvm.array<2 x i8>
+    %lb = arith.constant 0 : index
+    %ub0 = arith.constant 3 : index
+    %ub1 = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %i = %lb to %ub0 step %step {
+      scf.for %j = %lb to %ub1 step %step {
+        %elt = memref.load %alloc[%i, %j] : memref<3x2xf64>
+        %r0 = llvm.call @printf(%fmt, %elt) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr, f64) -> i32
+      }
+      %r1 = llvm.call @printf(%nl) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32
+    }'
+S=$(mktemp -d)
+./build/toyc-ch6 ../../test_Example/Toy/Ch6/llvm-lowering.mlir -emit=mlir-affine 2>&1 \
+  | awk '/^module \{$/ { print; print ENVIRON["DECLS"]; next }
+         /toy\.print %alloc : memref<3x2xf64>/ { print ENVIRON["PRINT"]; next }
+         { print }' \
+  | mlir-opt --lower-affine --convert-scf-to-cf --convert-arith-to-llvm \
+      --finalize-memref-to-llvm --convert-cf-to-llvm --convert-func-to-llvm > "$S"/llvm.mlir
+grep -c unrealized_conversion_cast "$S"/llvm.mlir
+mlir-opt --reconcile-unrealized-casts "$S"/llvm.mlir | mlir-translate --mlir-to-llvmir | lli > "$S"/stock.txt
+cat "$S"/stock.txt
+./build/toyc-ch6 ../../test_Example/Toy/Ch6/llvm-lowering.mlir -emit=jit > "$S"/toyc.txt
+diff "$S"/stock.txt "$S"/toyc.txt && echo "same output as toyc-ch6 -emit=jit"
+rm -rf "$S"
+```
+
+Real output **[20]**:
+
+```text
+18
+1.000000 16.000000 
+4.000000 25.000000 
+9.000000 36.000000 
+same output as toyc-ch6 -emit=jit
+```
+
+- The hand-written IR, lowered only by stock passes, prints the same matrix as the real `toy-to-llvm` pass running in the JIT. The design of `PrintOpLowering` is settled before it has a line of C++, and `mlir-opt`'s verifier has checked every op of it.
+- Six separate passes leave 18 `builtin.unrealized_conversion_cast`s at the seams between them, where one pass has converted a value's type and the next has not yet converted its user; `--reconcile-unrealized-casts` cancels them (section 2.8). The repo's single `applyFullConversion` converts all edges together and leaves none (section 2.8's count).
+
+**Write a lowering backwards: first the IR you want, checked with the stock tools, then the C++ that builds it.** The C++ then has a fixed target instead of an open design question.
+
+### 5.4 Step 4: turn each line of the IR into a builder call
+
+Each line of the section 5.3 IR becomes one `create<OpTy>(loc, ...)` call in `PrintOpLowering`. The real code is in sections 2.2 and 2.3; side by side:
+
+| Hand-written IR (section 5.3) | C++ in `PrintOpLowering` | Section |
+|---|---|---|
+| `llvm.func @printf(!llvm.ptr, ...) -> i32` | `rewriter.create<LLVM::LLVMFuncOp>(module.getLoc(), "printf", getPrintfType(context))` | 2.2 |
+| `llvm.mlir.global internal constant @frmt_spec("%f \00")` | `builder.create<LLVM::GlobalOp>(loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, name, builder.getStringAttr(value), /*alignment=*/0)` | 2.2 |
+| `llvm.mlir.addressof @frmt_spec` | `builder.create<LLVM::AddressOfOp>(loc, global)` | 2.2 |
+| `llvm.mlir.constant(0 : index) : i64` | `builder.create<LLVM::ConstantOp>(loc, builder.getI64Type(), builder.getIndexAttr(0))` | 2.2 |
+| `llvm.getelementptr %fmt_addr[%zero, %zero]` | `builder.create<LLVM::GEPOp>(loc, LLVM::LLVMPointerType::get(...), global.getType(), globalPtr, ArrayRef<Value>({cst0, cst0}))` | 2.2 |
+| `arith.constant 0 / 3 / 1 : index` | `rewriter.create<arith::ConstantIndexOp>(loc, 0)`, `(loc, memRefShape[i])`, `(loc, 1)` | 2.3 |
+| `scf.for %i = %lb to %ub0 step %step` | `rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step)` | 2.3 |
+| `memref.load %alloc[%i, %j]` | `rewriter.create<memref::LoadOp>(loc, printOp.getInput(), loopIvs)` | 2.3 |
+| `llvm.call @printf(%fmt, %elt) vararg(...)` | `rewriter.create<LLVM::CallOp>(loc, getPrintfType(context), printfRef, ArrayRef<Value>({formatSpecifierCst, elementLoad}))` | 2.3 |
+| `llvm.call @printf(%nl) vararg(...)` at the end of the outer loop | the same call with `newLineCst`, at the end of every loop body but the innermost | 2.3 |
+
+What the C++ adds over the hand-written IR is generality: the bounds `3` and `2` become `memRefShape[i]` and the two nested loops become a C++ loop over the dimensions; the declaration and the strings are created only if the module doesn't have them yet; and the `scf.yield` that the printed IR hides is created explicitly, after the default body `scf::ForOp` builds is erased (section 2.3).
+
+**Which arguments `create` takes.** `rewriter.create<OpTy>(loc, args...)` calls `OpTy::build(builder, state, args...)`, so the `build` overloads of an op's class are the menu. They are generated from the op's ODS (Operation Definition Specification) record; `mlir-tblgen` prints them from the installed `.td` files:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+I=/opt/homebrew/opt/llvm@20/include
+mlir-tblgen -gen-op-decls -I $I $I/mlir/Dialect/LLVMIR/LLVMOps.td \
+  | awk '/^class CallOp :/,/^};/' | grep 'static void build' | head -8
+mlir-tblgen -gen-op-decls -I $I $I/mlir/Dialect/SCF/IR/SCFOps.td \
+  | awk '/^class ForOp :/,/^};/' | grep 'static void build'
+```
+
+Real output **[21]**:
+
+```text
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, LLVMFuncOp func, ValueRange args);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, LLVMFunctionType calleeType, ValueRange args);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, TypeRange results, StringAttr callee, ValueRange args = {});
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, TypeRange results, FlatSymbolRefAttr callee, ValueRange args = {});
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, TypeRange results, StringRef callee, ValueRange args = {});
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, LLVMFunctionType calleeType, StringAttr callee, ValueRange args = {});
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, LLVMFunctionType calleeType, FlatSymbolRefAttr callee, ValueRange args = {});
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, LLVMFunctionType calleeType, StringRef callee, ValueRange args = {});
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, Value lowerBound, Value upperBound, Value step, ValueRange initArgs = std::nullopt, function_ref<void(OpBuilder &, Location, Value, ValueRange)> odsArg4 = nullptr);
+```
+
+- The first eight are `LLVM::CallOp`'s hand-written builders (`head -8` drops the long all-attributes ones that ODS adds after them). `PrintOpLowering` uses the one taking `(LLVMFunctionType calleeType, FlatSymbolRefAttr callee, ValueRange args)`: `getPrintfType(context)`, `printfRef`, and the operands.
+- `scf::ForOp` has one builder; the `PrintOpLowering` call passes only the bounds and the step, so `initArgs` stays empty (no loop-carried values) and the body builder is `nullptr`, which is why the body gets a default `scf.yield` that section 2.3 erases.
+
+**Why the call needs the function type.** The overload with `calleeType` is not arbitrary: a call to a variadic function must record the callee's type, and the verifier rejects one that doesn't. The section 5.3 call without its `vararg(...)` shows it:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+mlir-opt <<'EOF'
+llvm.func @printf(!llvm.ptr, ...) -> i32
+llvm.func @f(%p: !llvm.ptr, %x: f64) {
+  %r = llvm.call @printf(%p, %x) : (!llvm.ptr, f64) -> i32
+  llvm.return
+}
+EOF
+```
+
+Real output **[22]** (exit status 1):
+
+```text
+<stdin>:3:8: error: 'llvm.call' op missing var_callee_type attribute for vararg call
+  %r = llvm.call @printf(%p, %x) : (!llvm.ptr, f64) -> i32
+       ^
+<stdin>:3:8: note: see current operation: %0 = "llvm.call"(%arg0, %arg1) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @printf, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (!llvm.ptr, f64) -> i32
+```
+
+`var_callee_type` is the attribute that `vararg(...)` prints; the builder fills it from `calleeType`, which is why every `LLVM::CallOp` in `PrintOpLowering` passes `getPrintfType(context)` (section 2.2).
+
+### 5.5 Step 5: reuse Chapter 5's pass skeleton
+
+The pass around the patterns has the same shape as Chapter 5's `ToyToAffineLoweringPass`. The lines that make up the skeleton, in both files, then the two headers Chapter 6 touches, compared with Chapter 5's (`Ops.td` by the C++ it generates):
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+grep -nE 'PassWrapper<|getDependentDialects|ConversionTarget target|TypeConverter typeConverter|RewritePatternSet patterns|patterns.add<|apply(Partial|Full)Conversion|std::make_unique<' \
+  ../Ch5/mlir/LowerToAffineLoops.cpp mlir/LowerToLLVM.cpp
+diff ../Ch5/include/toy/Passes.h include/toy/Passes.h
+I=/opt/homebrew/opt/llvm@20/include
+for g in -gen-op-decls -gen-op-defs; do
+  diff <(mlir-tblgen $g -I $I -I ../Ch5/include ../Ch5/include/toy/Ops.td) \
+       <(mlir-tblgen $g -I $I -I include include/toy/Ops.td) && echo "Ops.td: same $g output as Chapter 5"
+done
+```
+
+Real output **[23]**:
+
+```text
+../Ch5/mlir/LowerToAffineLoops.cpp:329:    : public PassWrapper<ToyToAffineLoweringPass, OperationPass<ModuleOp>> {
+../Ch5/mlir/LowerToAffineLoops.cpp:333:  void getDependentDialects(DialectRegistry &registry) const override {
+../Ch5/mlir/LowerToAffineLoops.cpp:344:  ConversionTarget target(getContext());
+../Ch5/mlir/LowerToAffineLoops.cpp:367:  RewritePatternSet patterns(&getContext());
+../Ch5/mlir/LowerToAffineLoops.cpp:368:  patterns.add<AddOpLowering, ConstantOpLowering, FuncOpLowering, MulOpLowering,
+../Ch5/mlir/LowerToAffineLoops.cpp:376:          applyPartialConversion(getOperation(), target, std::move(patterns))))
+../Ch5/mlir/LowerToAffineLoops.cpp:383:  return std::make_unique<ToyToAffineLoweringPass>();
+mlir/LowerToLLVM.cpp:185:    : public PassWrapper<ToyToLLVMLoweringPass, OperationPass<ModuleOp>> {
+mlir/LowerToLLVM.cpp:189:  void getDependentDialects(DialectRegistry &registry) const override {
+mlir/LowerToLLVM.cpp:200:  LLVMConversionTarget target(getContext());
+mlir/LowerToLLVM.cpp:208:  LLVMTypeConverter typeConverter(&getContext());
+mlir/LowerToLLVM.cpp:218:  RewritePatternSet patterns(&getContext());
+mlir/LowerToLLVM.cpp:228:  patterns.add<PrintOpLowering>(&getContext());
+mlir/LowerToLLVM.cpp:233:  if (failed(applyFullConversion(module, target, std::move(patterns))))
+mlir/LowerToLLVM.cpp:240:  return std::make_unique<ToyToLLVMLoweringPass>();
+27a28,31
+> /// Create a pass for lowering operations the remaining `Toy` operations, as
+> /// well as `Affine` and `Std`, to the LLVM dialect for codegen.
+> std::unique_ptr<mlir::Pass> createLowerToLLVMPass();
+> 
+Ops.td: same -gen-op-decls output as Chapter 5
+Ops.td: same -gen-op-defs output as Chapter 5
+```
+
+Both are a `PassWrapper` on `ModuleOp` that declares its dependent dialects, builds a target and a pattern set, applies a conversion, and is created by a factory function. Four things differ, each for a reason sections 2.4–2.7 explain:
+
+- **Target:** a plain `ConversionTarget` with legal and illegal dialects listed by hand becomes `LLVMConversionTarget`, which already marks the LLVM dialect legal (section 2.4).
+- **Type converter:** new in this chapter; `LLVMTypeConverter` maps `memref` and `index` to LLVM types (section 2.5).
+- **Patterns:** Chapter 5 adds only its own patterns; here the six `populate*` calls of section 5.2 come first and `PrintOpLowering` is the only own pattern (section 2.6).
+- **Conversion:** `applyPartialConversion`, which let `toy.print` survive, becomes `applyFullConversion`, which lets nothing but LLVM survive (section 2.7).
+
+`getDependentDialects` lists the dialects the patterns create that the input may not contain: `llvm`, and `scf` for `PrintOpLowering`'s loops (section 2.4).
+
+The factory is declared in `Passes.h` exactly like `createLowerToAffinePass()` above it (section 2.8). `Ops.td` only moves `ReshapeOp`'s `results` line below `hasCanonicalizer`; ODS doesn't depend on the order of an op's fields, so both chapters generate the same op classes and nothing in `Ops.td` needs changing for this chapter.
+
+### 5.6 Step 6: run the driver's new stages with stock tools first
+
+After `toy-to-llvm`, the driver has to take the module the rest of the way: clean it up, export it, optimize it and run it. Before writing any of that in C++, find a stock tool for each stage. The cleanup passes are `mlir-opt` passes, and `mlir-runner` JIT-runs a module that is all LLVM dialect:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+mlir-opt --help | grep -E -- '--(reconcile-unrealized-casts|ensure-debug-info-scope-on-llvm-func) '
+./build/toyc-ch6 ../../test_Example/Toy/Ch6/jit.toy -emit=mlir-llvm 2>&1 \
+  | mlir-runner -e main -entry-point-result=void -O3
+```
+
+Real output **[24]**:
+
+```text
+      --ensure-debug-info-scope-on-llvm-func                 -   Materialize LLVM debug info subprogram attribute on every LLVMFuncOp
+      --reconcile-unrealized-casts                           -   Simplify and eliminate unrealized conversion casts
+1.000000 2.000000 
+3.000000 4.000000 
+```
+
+- **The two passes** are the ones section 3.3's IR dump lists after `toy-to-llvm`: `reconcile-unrealized-casts` removes the bridge casts that dialect conversion can leave, and `ensure-debug-info-scope-on-llvm-func` gives every `llvm.func` the debug scope behind the `!dbg` lines of section 3.1. `toyc.cpp` adds them right after `createLowerToLLVMPass()` (section 2.8); section 5.7 finds their factories.
+- **`mlir-runner`** does in one tool what `runJit` does: translate the module to LLVM IR, optimize it (`-O3`, the level `makeOptimizingTransformer` takes), JIT-compile it, and call the function named by `-e`. Toy's `main` takes no arguments and returns nothing (`-entry-point-result=void`), so `runJit` calls it with `invokePacked("main")` and no arguments (section 3.2). Appendix B splits the same path into `mlir-translate --mlir-to-llvmir`, the translation that `dumpLLVMIR` performs, and `lli`.
+- **The three new `-emit` actions** follow from these stage boundaries: `mlir-llvm` stops after the passes, `llvm` after the export, `jit` after the run. Appended to the `Action` enum after `DumpMLIRAffine`, they keep the `>=` comparisons of `loadAndProcessMLIR` working (section 3.3). Because `dumpLLVMIR` and `runJit` need the module after the pass pipeline has run, `main()` now creates the context and the module itself, calls `loadAndProcessMLIR` (Chapter 5's `dumpMLIR` without the dump), and picks a path by action (section 3).
+
+**Before writing driver code, run its stages with stock tools: their flags (`-e`, `-entry-point-result`, `-O3`) list the decisions the C++ has to make.**
+
+### 5.7 Step 7: find the header for each new API
+
+Each stage of section 5.6 has a C++ entry point in the installed headers. A `grep` for each declaration finds the header to include:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+I=/opt/homebrew/opt/llvm@20/include
+grep -rnm1 -E '^(translateModuleToLLVMIR|void register(LLVM|Builtin)DialectTranslation\(MLIRContext|makeOptimizingTransformer|class ExecutionEngine \{|std::unique_ptr<Pass> createReconcileUnrealizedCastsPass|std::unique_ptr<::mlir::Pass> createDIScopeForLLVMFuncOpPass\(\);|void registerInlinerInterface)' \
+  $I/mlir | sed "s|$I/||"
+grep -nE '^class JITTargetMachineBuilder \{|^  inline bool InitializeNativeTarget(AsmPrinter)?\(\)' \
+  $I/llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h $I/llvm/Support/TargetSelect.h | sed "s|$I/||"
+```
+
+Real output **[25]**:
+
+```text
+mlir/Target/LLVMIR/Export.h:29:translateModuleToLLVMIR(Operation *module, llvm::LLVMContext &llvmContext,
+mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h:27:void registerLLVMDialectTranslation(MLIRContext &context);
+mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h:27:void registerBuiltinDialectTranslation(MLIRContext &context);
+mlir/ExecutionEngine/ExecutionEngine.h:114:class ExecutionEngine {
+mlir/ExecutionEngine/OptUtils.h:34:makeOptimizingTransformer(unsigned optLevel, unsigned sizeLevel,
+mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h:23:std::unique_ptr<Pass> createReconcileUnrealizedCastsPass();
+mlir/Dialect/LLVMIR/Transforms/Passes.h.inc:20:std::unique_ptr<::mlir::Pass> createDIScopeForLLVMFuncOpPass();
+mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h:23:void registerInlinerInterface(DialectRegistry &registry);
+llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h:34:class JITTargetMachineBuilder {
+llvm/Support/TargetSelect.h:119:  inline bool InitializeNativeTarget() {
+llvm/Support/TargetSelect.h:133:  inline bool InitializeNativeTargetAsmPrinter() {
+```
+
+- **Export** (`dumpLLVMIR`, section 3.1): `translateModuleToLLVMIR` in `Export.h`, and one `register…Translation` header per dialect left in the module, `llvm` and `builtin`; without them the export fails (section 3.1's run).
+- **Optimization and JIT** (`runJit`, section 3.2): `OptUtils.h` for `makeOptimizingTransformer`, `ExecutionEngine.h` for `ExecutionEngine` and its `ExecutionEngineOptions`; `dumpLLVMIR` uses the latter header too, for `setupTargetTripleAndDataLayout`.
+- **The two passes:** `createReconcileUnrealizedCastsPass()` sits under `mlir/Conversion/`, not `mlir/Transforms/`, which is why `toyc.cpp` includes it separately with its `// FIX:` comment (section 2.8). `createDIScopeForLLVMFuncOpPass()` is declared in the generated `Passes.h.inc`, which `mlir/Dialect/LLVMIR/Transforms/Passes.h` includes; that is the header to name.
+- **The LLVM inliner interface:** the first `registerInlinerInterface` in `InlinerInterfaceImpl.h` is the LLVM dialect's (`mlir::LLVM::`); `main()` adds it to the `DialectRegistry` next to the func extensions (section 2.8).
+- **The `llvm::` side:** `TargetSelect.h` for the native target initialization and `JITTargetMachineBuilder.h` for `detectHost()`, both needed before a `TargetMachine` exists (section 3.1).
+
+Each header is one of the new `#include`s at the top of `toyc.cpp`.
+
+### 5.8 Step 8: let the linker pick the library
+
+With the code written, Chapter 5's link line (`MLIR` + `LLVM`) still compiles every file but can't link the program. A scratch copy with that line put back (by `sed`; the build takes about 20 seconds) shows what is missing; `nm` and the installed CMake package then show which library has it:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch6
+S=$(mktemp -d)
+cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
+sed -i '' 's/^    MLIRExecutionEngineShared .*/    LLVM/' "$S"/CMakeLists.txt
+cmake -S "$S" -B "$S"/build -G Ninja >/dev/null
+cmake --build "$S"/build 2>&1 | grep -E '^Undefined|^  "|^ld:'
+rm -rf "$S"
+L=/opt/homebrew/opt/llvm@20/lib
+for lib in libMLIR.dylib libMLIRExecutionEngineShared.dylib; do
+  echo "$lib: $(nm -gU $L/$lib | c++filt | grep -c 'mlir::ExecutionEngine::') mlir::ExecutionEngine symbols"
+done
+grep -A1 -E 'set_target_properties\(MLIRExecutionEngine(Shared)? ' $L/cmake/mlir/MLIRTargets.cmake
+grep -n 'MLIR_ENABLE_EXECUTION_ENGINE' $L/cmake/mlir/MLIRConfig.cmake
+```
+
+Real output **[26]**:
+
+```text
+Undefined symbols for architecture arm64:
+  "mlir::ExecutionEngine::invokePacked(llvm::StringRef, llvm::MutableArrayRef<void*>)", referenced from:
+  "mlir::ExecutionEngine::setupTargetTripleAndDataLayout(llvm::Module*, llvm::TargetMachine*)", referenced from:
+  "mlir::ExecutionEngine::create(mlir::Operation*, mlir::ExecutionEngineOptions const&, std::__1::unique_ptr<llvm::TargetMachine, std::__1::default_delete<llvm::TargetMachine>>)", referenced from:
+  "mlir::ExecutionEngine::~ExecutionEngine()", referenced from:
+ld: symbol(s) not found for architecture arm64
+libMLIR.dylib: 0 mlir::ExecutionEngine symbols
+libMLIRExecutionEngineShared.dylib: 11 mlir::ExecutionEngine symbols
+set_target_properties(MLIRExecutionEngine PROPERTIES
+  INTERFACE_LINK_LIBRARIES "LLVM;MLIR"
+--
+set_target_properties(MLIRExecutionEngineShared PROPERTIES
+  INTERFACE_LINK_LIBRARIES "LLVM;MLIR;LLVM"
+21:set(MLIR_ENABLE_EXECUTION_ENGINE "1")
+```
+
+- **Only `mlir::ExecutionEngine` is missing**, from `dumpLLVMIR` and `runJit`. The translation, `makeOptimizingTransformer`, the two passes and the inliner interface are all in `libMLIR.dylib` already.
+- **`nm`** finds those symbols in `libMLIRExecutionEngineShared.dylib`, not in `libMLIR.dylib`, and the package offers that code as two targets: static `MLIRExecutionEngine` and shared `MLIRExecutionEngineShared`. The static one links `MLIR`, i.e. `libMLIR.dylib`, next to its own static archive: the mix behind the TypeID segfault of section 6 (appendix C.2). The shared one is the one to add.
+- **`LLVM` can go:** `MLIRExecutionEngineShared` already lists it in its `INTERFACE_LINK_LIBRARIES`, so the Chapter 6 link line is `MLIR` + `MLIRExecutionEngineShared` (appendix C.2).
+- **The guard:** `MLIR_ENABLE_EXECUTION_ENGINE` is how the package says it was built with these targets; `CMakeLists.txt` returns before defining the chapter's targets when it is off (appendix C.1).
+
+**A link error names symbols, not libraries; `nm` maps the symbols to a library, and the package's target file shows what each candidate target drags in with it.**
+
+---
+
+## 6. Key Takeaways & Pitfalls
 
 ### ⚠️ Pitfall #1 (the big one): static + shared MLIR libs ⇒ TypeID-duplication segfault
 
@@ -1322,7 +1726,8 @@ Documented in full in **[MLIR_LINKING_PITFALL.md](MLIR_LINKING_PITFALL.md)** —
 3. **`LLVMTypeConverter`** is where types cross the boundary — most visibly `memref<2x2xf64>` → the five-field descriptor struct `{ptr, ptr, i64, [2 x i64], [2 x i64]}` (allocated ptr, aligned ptr, offset, sizes, strides).
 4. **Conversion ≠ translation.** Dialect conversion rewrites MLIR into the LLVM *dialect*; `translateModuleToLLVMIR` then exports 1:1 into an `llvm::Module`. Two different mechanisms, two different failure modes.
 5. **`mlir::ExecutionEngine`** makes "compile and run in-process" a ~30-line function: translation + `makeOptimizingTransformer` + ORC JIT + `invokePacked("main")`.
-6. On macOS with Homebrew LLVM, **link shared MLIR libraries consistently** (`MLIR` + `MLIRExecutionEngineShared`) and verify with `otool -L`.
+6. **A lowering is written backwards** (section 5): list the dialects left, reuse a stock `populate*` function for each, write the IR the one custom op should become and check it with `mlir-opt`, then turn each line into a `create<OpTy>(...)` call. The driver and build follow the same way: run each new stage with a stock tool (`mlir-opt`, `mlir-runner`) first, grep the headers for its C++ entry point, and let the linker's undefined symbols pick the library.
+7. On macOS with Homebrew LLVM, **link shared MLIR libraries consistently** (`MLIR` + `MLIRExecutionEngineShared`) and verify with `otool -L`.
 
 ---
 
@@ -1339,7 +1744,7 @@ cd /Users/roy/study/mlir/toy/Ch6
 ./build/toyc-ch6 ../../test_Example/Toy/Ch6/llvm-lowering.mlir -emit=jit
 ```
 
-Real output **[17]**:
+Real output **[27]**:
 
 ```text
 1.000000 16.000000 
@@ -1355,7 +1760,7 @@ cd /Users/roy/study/mlir/toy/Ch6
   | FileCheck ../../test_Example/Toy/Ch6/llvm-lowering.mlir && echo "all checks pass"
 ```
 
-Real output **[18]**:
+Real output **[28]**:
 
 ```text
 all checks pass
@@ -1372,7 +1777,7 @@ cd /Users/roy/study/mlir/toy/Ch6
 ./build/toyc-ch6 ../../test_Example/Toy/Ch6/codegen.toy -emit=jit
 ```
 
-Real output **[19]** — the same 3×2 values as appendix A.1, computed from Toy source instead of hand-written IR:
+Real output **[29]** — the same 3×2 values as appendix A.1, computed from Toy source instead of hand-written IR:
 
 ```text
 1.000000 16.000000 
@@ -1387,7 +1792,7 @@ cd /Users/roy/study/mlir/toy/Ch6
 ./build/toyc-ch6 ../../test_Example/Toy/Ch6/invalid.mlir -emit=mlir
 ```
 
-Real output **[20]** (exit status 3):
+Real output **[30]** (exit status 3):
 
 ```text
 loc("../../test_Example/Toy/Ch6/invalid.mlir":8:8): error: 'toy.print' op requires zero results
@@ -1408,7 +1813,7 @@ export P=/opt/homebrew/opt/llvm@20/bin
   | $P/lli
 ```
 
-Real output **[21]** — the same matrix as section 4.2:
+Real output **[31]** — the same matrix as section 4.2:
 
 ```text
 1.000000 2.000000 
@@ -1422,8 +1827,6 @@ Each stage is one of the chapter's concepts as a standalone tool:
 - **`lli`** — LLVM's own JIT, standing in for section 3.2's `runJit`/ExecutionEngine (both sit on ORC underneath); it resolves `printf`/`malloc`/`free` against the host libc the same way. Swap `lli` for `$P/llc -filetype=obj -o toy.o` and you have an object file for a real linker instead — the AOT exit ramp from the same IR.
 
 `toyc-ch6` bundles these stages into one process for convenience (and to avoid textual round-trips); the pipe shows they remain independently replaceable pieces of the LLVM/MLIR ecosystem.
-
----
 
 ---
 
@@ -1487,7 +1890,7 @@ target_link_libraries(toyc-ch6
 That's it. **Two shared libraries, zero static archives.** Compared with Chapter 5 (`MLIR` + `LLVM`), `LLVM` is replaced by `MLIRExecutionEngineShared`. This is deliberate (the `NOTE` comment guards it in the file itself), and it is how this repo avoids the segfault documented in [MLIR_LINKING_PITFALL.md](MLIR_LINKING_PITFALL.md):
 
 - A link line written for an in-tree build lists dozens of *static* targets: `${dialect_libs}`, `${conversion_libs}`, `${extension_libs}`, `MLIRExecutionEngine`, `MLIRAnalysis`, `MLIRIR`, `MLIRPass`, … That works inside llvm-project's own build tree.
-- But against **Homebrew LLVM**, the static `MLIRExecutionEngine` target carries `INTERFACE_LINK_LIBRARIES "LLVM;MLIR"` — and `MLIR` there means **`libMLIR.dylib`**. The linker then pulls in *both* the static `.a` copies of MLIR *and* the dylib → two copies of every TypeID static → runtime segfault (details in section 5).
+- But against **Homebrew LLVM**, the static `MLIRExecutionEngine` target carries `INTERFACE_LINK_LIBRARIES "LLVM;MLIR"` — and `MLIR` there means **`libMLIR.dylib`**. The linker then pulls in *both* the static `.a` copies of MLIR *and* the dylib → two copies of every TypeID static → runtime segfault (details in section 6).
 - The fix: link **shared libraries consistently**. `libMLIR.dylib` already contains *all* dialects, passes and conversions (that's why no `${dialect_libs}` are needed), and `libMLIRExecutionEngineShared.dylib` supplies the JIT. `libMLIR.dylib` itself depends on `libLLVM.dylib`, which bundles every LLVM component (OrcJIT, native codegen), so no `LLVM_LINK_COMPONENTS`/`llvm_map_components_to_libnames` boilerplate is needed either.
 
 ### C.3 Verifying the link
@@ -1497,7 +1900,7 @@ cd /Users/roy/study/mlir/toy/Ch6
 otool -L ./build/toyc-ch6
 ```
 
-Real output **[22]**:
+Real output **[32]**:
 
 ```text
 ./build/toyc-ch6:
@@ -1521,14 +1924,14 @@ cd /Users/roy/study/mlir/toy/Ch6
 ./examples.sh -l
 ```
 
-Real output **[23]** (abridged):
+Real output **[33]** (abridged):
 
 ```text
 [ 1] 2.1   ./build/toyc-ch6 ../../test_Example/Toy/Ch6/jit.toy -emit=mlir-affine 2>&1 | grep toy.print
 [ 2] 2.6   S=$(mktemp -d)
 ...
-[22] C.3   otool -L ./build/toyc-ch6
-[23] D     ./examples.sh -l
+[32] C.3   otool -L ./build/toyc-ch6
+[33] D     ./examples.sh -l
 ```
 
 The script reads the commands from `README.md` on every run. A command is every `bash` code block in file order, except the build block (its first command after `cd` is `cmake`) and file excerpts (a `***path***` label above the fence). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". So adding, removing or reordering a command block renumbers the ones after it, and their **[N]** labels must be updated to match.

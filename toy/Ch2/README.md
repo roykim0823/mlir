@@ -18,7 +18,7 @@ Why bother? Unlike LLVM IR's fixed, low-level instruction set, MLIR lets us defi
 
 The lexer, parser, and AST (`Lexer.h`, `Parser.h`, `AST.h`, `parser/AST.cpp`) are carried over unchanged from Chapter 1. Everything new is introduced in the section that explains it: the ODS definitions in `include/toy/Ops.td` (sections 3–4), the dialect implementation in `mlir/Dialect.cpp` (sections 3–4), the emitter in `mlir/MLIRGen.cpp` and the extended driver (section 5).
 
-Sections 1–7 follow the chapter's essential path. The appendices hold the reference material: the other eight ops (A), `Ops.td` as a whole, its generated code, and the hand-written `Dialect.cpp` (B), printing details and stock `mlir-opt` (C), more inputs (D), the build wiring (E), and the script that runs every command in this README (F).
+Sections 1–8 follow the chapter's essential path; section 7 shows how to derive the chapter's new code yourself, from the AST classes to the builder calls and the build rules. The appendices hold the reference material: the other eight ops (A), `Ops.td` as a whole, its generated code, and the hand-written `Dialect.cpp` (B), printing details and stock `mlir-opt` (C), more inputs (D), the build wiring (E), and the script that runs every command in this README (F).
 
 ---
 
@@ -1844,7 +1844,7 @@ The file ends by including the generated method bodies (`GET_OP_CLASSES` from `O
 
 ## 5. The MLIRGen Module
 
-With the dialect in place, [`mlir/MLIRGen.cpp`](mlir/MLIRGen.cpp) turns the Chapter 1 AST into Toy ops. It is a recursive walk over the tree: there is one `mlirGen` overload per AST node kind, each creates the op(s) for its node, and each returns what its caller needs. The public API is one function:
+With the dialect in place, [`mlir/MLIRGen.cpp`](mlir/MLIRGen.cpp) turns the Chapter 1 AST into Toy ops. It is a recursive walk over the tree: there is one `mlirGen` overload per AST node kind, each creates the op(s) for its node, and each returns what its caller needs. Section 7 shows how to arrive at this file, and at the dialect, without having them. The public API is one function:
 
 ***include/toy/MLIRGen.h***
 ```cpp
@@ -2731,7 +2731,7 @@ int main(int argc, char **argv) {
 
 The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 2 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — the TableGen wiring — is in appendix E.
 
-Every command in this README is numbered by its output (**[1]**–**[59]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 7` runs only command [7], and `./examples.sh -l` lists them (appendix F).
+Every command in this README is numbered by its output (**[1]**–**[69]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 7` runs only command [7], and `./examples.sh -l` lists them (appendix F).
 
 ### 6.1 Building
 
@@ -3035,7 +3035,428 @@ class AddOp : public ::mlir::Op
 
 ---
 
-## 7. Key Takeaways & Pitfalls
+## 7. Deriving the Toy dialect, MLIRGen and the build yourself
+
+Sections 3–5 explain the chapter's new code as it is, and appendix E its build. This section shows how to arrive at it without having it. Little of it is invented from scratch: the ops follow from the AST and from IR you can write before the dialect exists, the declarations are borrowed from a stock dialect, and the tools tell you which C++ you still owe and which libraries to link:
+
+| File (or part) | Where it comes from |
+|---|---|
+| `include/toy/Ops.td`: the nine op records | One op per kind of IR the AST needs (7.1), designed as hand-written IR first (7.2); fields borrowed from the closest stock op (7.3) and added one at a time (section 4.4) |
+| `include/toy/Dialect.h` | A stock dialect's header: its interface includes, then the generated `.inc` files (7.3, section 3.3) |
+| `mlir/Dialect.cpp` | A fixed skeleton, plus exactly the methods the linker reports missing (7.4) |
+| `include/toy/MLIRGen.h` | One function: AST in, module out (section 5) |
+| `mlir/MLIRGen.cpp` | One `mlirGen` overload per AST class (7.1), one `create<OpTy>` call per op, with the arguments of a generated builder (7.5) |
+| `toyc.cpp`, changed | Chapter 1's driver, plus an `MLIRContext`, the dialect, MLIRGen, and the `.mlir` parser (7.6) |
+| `CMakeLists.txt` and `include/toy/CMakeLists.txt`, changed and new | The `.inc` files the code includes, one `mlir_tablegen` rule each; the libraries the linker reports missing (7.7) |
+
+### 7.1 Step 1: list what MLIRGen has to translate
+
+MLIRGen's input is Chapter 1's AST, so the AST classes are the to-do list:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+grep -n '^class' include/toy/AST.h
+```
+
+Real output **[44]**:
+
+```text
+35:class ExprAST {
+65:class NumberExprAST : public ExprAST {
+79:class LiteralExprAST : public ExprAST {
+97:class VariableExprAST : public ExprAST {
+111:class VarDeclExprAST : public ExprAST {
+131:class ReturnExprAST : public ExprAST {
+149:class BinaryExprAST : public ExprAST {
+168:class CallExprAST : public ExprAST {
+186:class PrintExprAST : public ExprAST {
+202:class PrototypeAST {
+218:class FunctionAST {
+231:class ModuleAST {
+```
+
+Each class needs an `mlirGen` overload (section 5), and each kind of value or effect it produces needs an op:
+
+| AST class | Becomes |
+|---|---|
+| `ModuleAST`, `FunctionAST`, `PrototypeAST` | the module, and one `toy.func` per function |
+| `NumberExprAST`, `LiteralExprAST` | `toy.constant` |
+| `VarDeclExprAST` | its initializer, plus `toy.reshape` when the declaration has a shape |
+| `VariableExprAST` | no op: a lookup in the symbol table |
+| `BinaryExprAST` | `toy.add` or `toy.mul` |
+| `CallExprAST` | `toy.generic_call`, or `toy.transpose` for the builtin |
+| `PrintExprAST`, `ReturnExprAST` | `toy.print`, `toy.return` |
+
+That is the nine ops of section 4; `ExprAST` is the base class, dispatched on its kind.
+
+### 7.2 Step 2: write the target IR by hand and check it with stock tools
+
+Before the dialect exists, write the IR a small program should become. The generic form (section 2.3) needs no dialect: an op is a quoted name, operands, attributes in `{...}` and a function type, so stock `mlir-opt` checks it with `--allow-unregistered-dialect` (section 2.4). Keep the file: once the dialect and MLIRGen exist, it is their acceptance test. The block below does both — the hand-written IR must pass `mlir-opt`, parse and verify in `toyc-ch2`, and equal what MLIRGen emits for the Toy source:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+S=$(mktemp -d)
+cat > "$S"/square.toy <<'EOF'
+def square(x) {
+  return x * x;
+}
+
+def main() {
+  var a<2, 2> = [1, 2, 3, 4];
+  print(transpose(square(a)));
+}
+EOF
+cat > "$S"/hand.mlir <<'EOF'
+"toy.func"() ({
+^bb0(%x: tensor<*xf64>):
+  %sq = "toy.mul"(%x, %x) : (tensor<*xf64>, tensor<*xf64>) -> tensor<*xf64>
+  "toy.return"(%sq) : (tensor<*xf64>) -> ()
+}) {sym_name = "square", function_type = (tensor<*xf64>) -> tensor<*xf64>} : () -> ()
+"toy.func"() ({
+  %flat = "toy.constant"() {value = dense<[1.0, 2.0, 3.0, 4.0]> : tensor<4xf64>} : () -> tensor<4xf64>
+  %a = "toy.reshape"(%flat) : (tensor<4xf64>) -> tensor<2x2xf64>
+  %s = "toy.generic_call"(%a) {callee = @square} : (tensor<2x2xf64>) -> tensor<*xf64>
+  %t = "toy.transpose"(%s) : (tensor<*xf64>) -> tensor<*xf64>
+  "toy.print"(%t) : (tensor<*xf64>) -> ()
+  "toy.return"() : () -> ()
+}) {sym_name = "main", function_type = () -> ()} : () -> ()
+EOF
+mlir-opt --allow-unregistered-dialect "$S"/hand.mlir > /dev/null; echo "mlir-opt exit status: $?"
+./build/toyc-ch2 "$S"/hand.mlir -emit=mlir > "$S"/hand.txt 2>&1; echo "toyc-ch2 (hand.mlir) exit status: $?"
+./build/toyc-ch2 "$S"/square.toy -emit=mlir > "$S"/gen.txt 2>&1
+diff "$S"/hand.txt "$S"/gen.txt && echo "MLIRGen emits the hand-written module"
+rm -r "$S"
+```
+
+Real output **[45]**:
+
+```text
+mlir-opt exit status: 0
+toyc-ch2 (hand.mlir) exit status: 0
+MLIRGen emits the hand-written module
+```
+
+- **`mlir-opt` exit status 0**: before any Toy code exists, the structure is right: every value is defined before use, every operand type matches its definition, and the regions are well formed. What an unregistered op can't get is checked later (section 2.4 shows invalid IR passing here).
+- **`toyc-ch2` exit status 0**: with the dialect registered, the same text parses and verifies. The attributes written in `{...}` become the ops' properties (appendix C.1), so the generic form written for an unregistered op works unchanged.
+- **No `diff` output**: MLIRGen, given the Toy source, emits exactly the module that was designed by hand. The hand-written `%flat`, `%a`, ... names don't matter; the printer renumbers both.
+
+**Design the IR before the code that produces it: the generic form needs no dialect, so the target can be written and checked first, and then serves as the test.**
+
+### 7.3 Step 3: borrow the declarations from a stock dialect
+
+Every op of section 7.2 needs an ODS record (section 4.3), and the fields of a new op are rarely new: the closest stock op has them already. `toy.func` is a function, so the Func dialect's `func.func` is the model. The fields of both records:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+I=/opt/homebrew/opt/llvm@20/include
+for f in $I/mlir/Dialect/Func/IR/FuncOps.td include/toy/Ops.td; do
+  echo "== ${f#$I/}"
+  awk '/^def FuncOp/,/^}/' "$f" | grep -E '^def|OpInterface, |FunctionOpInterface|Attr<|Attr:|AttrOf<|let regions|CustomAssemblyFormat|skipDefaultBuilders'
+done
+```
+
+Real output **[46]**:
+
+```text
+== mlir/Dialect/Func/IR/FuncOps.td
+def FuncOp : Func_Op<"func", [
+  FunctionOpInterface, IsolatedFromAbove, OpAsmOpInterface
+  let arguments = (ins SymbolNameAttr:$sym_name,
+                       TypeAttrOf<FunctionType>:$function_type,
+                       OptionalAttr<StrAttr>:$sym_visibility,
+                       OptionalAttr<DictArrayAttr>:$arg_attrs,
+                       OptionalAttr<DictArrayAttr>:$res_attrs,
+                       UnitAttr:$no_inline);
+  let regions = (region AnyRegion:$body);
+    // FunctionOpInterface Methods
+  let hasCustomAssemblyFormat = 1;
+== include/toy/Ops.td
+def FuncOp : Toy_Op<"func", [
+    FunctionOpInterface, IsolatedFromAbove
+    SymbolNameAttr:$sym_name,
+    TypeAttrOf<FunctionType>:$function_type,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs
+  let regions = (region AnyRegion:$body);
+    // FunctionOpInterface Methods
+  let hasCustomAssemblyFormat = 1;
+  let skipDefaultBuilders = 1;
+```
+
+- `toy.func` keeps `func.func`'s traits, its `sym_name`/`function_type`/`arg_attrs`/`res_attrs` arguments, its region and its custom format, and drops what Toy doesn't use (`sym_visibility`, `no_inline`, `OpAsmOpInterface`). Appendix A.3 explains each field.
+- The hand-written half needs no invention either: `FuncOp::parse`/`print` in `Dialect.cpp` only call the library's `function_interface_impl` helpers for function ops, which is why `toy.func` prints like `func.func` (appendix A.3).
+
+The header follows the same model. A dialect's header includes the interfaces its ops use, then the generated classes:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+grep -n '#include\|#define GET' /opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h include/toy/Dialect.h
+```
+
+Real output **[47]**:
+
+```text
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:12:#include "mlir/Bytecode/BytecodeOpInterface.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:13:#include "mlir/IR/Builders.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:14:#include "mlir/IR/BuiltinTypes.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:15:#include "mlir/IR/Dialect.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:16:#include "mlir/IR/OpImplementation.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:17:#include "mlir/IR/SymbolTable.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:18:#include "mlir/Interfaces/CallInterfaces.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:19:#include "mlir/Interfaces/ControlFlowInterfaces.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:20:#include "mlir/Interfaces/FunctionInterfaces.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:21:#include "mlir/Interfaces/InferTypeOpInterface.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:22:#include "mlir/Interfaces/SideEffectInterfaces.h"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:28:#define GET_OP_CLASSES
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:29:#include "mlir/Dialect/Func/IR/FuncOps.h.inc"
+/opt/homebrew/opt/llvm@20/include/mlir/Dialect/Func/IR/FuncOps.h:31:#include "mlir/Dialect/Func/IR/FuncOpsDialect.h.inc"
+include/toy/Dialect.h:17:#include "mlir/Bytecode/BytecodeOpInterface.h"
+include/toy/Dialect.h:18:#include "mlir/IR/Dialect.h"
+include/toy/Dialect.h:19:#include "mlir/IR/SymbolTable.h"
+include/toy/Dialect.h:20:#include "mlir/Interfaces/CallInterfaces.h"
+include/toy/Dialect.h:21:#include "mlir/Interfaces/FunctionInterfaces.h"
+include/toy/Dialect.h:22:#include "mlir/Interfaces/SideEffectInterfaces.h"
+include/toy/Dialect.h:26:#include "toy/Dialect.h.inc"
+include/toy/Dialect.h:30:#define GET_OP_CLASSES
+include/toy/Dialect.h:31:#include "toy/Ops.h.inc"
+```
+
+- Every MLIR include of `Dialect.h` is one of `FuncOps.h`'s: `SymbolTable.h` and `FunctionInterfaces.h` for `FuncOp`'s traits, `SideEffectInterfaces.h` for `Pure`, and so on. Toy's ops use fewer traits, so it needs fewer headers.
+- Both end with the two generated headers, the op classes under `GET_OP_CLASSES`; section 3.3 explains them.
+
+### 7.4 Step 4: let the linker list the C++ you still owe
+
+ODS generates the op classes, but some fields only declare a method and leave the body to you (`hasVerifier`, `hasCustomAssemblyFormat`, bodiless builders; section 4.6). You don't need to collect them by hand: write the part of `Dialect.cpp` that every dialect has — the generated dialect class, `initialize()` with the op list, and the generated op methods (section 3.3) — and build. The command builds a scratch copy of the chapter with only that skeleton as `Dialect.cpp`:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+tmp=$(mktemp -d)
+cp -R CMakeLists.txt toyc.cpp parser mlir include "$tmp"/
+cat > "$tmp"/mlir/Dialect.cpp <<'EOF'
+#include "toy/Dialect.h"
+
+using namespace mlir;
+using namespace mlir::toy;
+
+#include "toy/Dialect.cpp.inc"
+
+void ToyDialect::initialize() {
+  addOperations<
+#define GET_OP_LIST
+#include "toy/Ops.cpp.inc"
+      >();
+}
+
+#define GET_OP_CLASSES
+#include "toy/Ops.cpp.inc"
+EOF
+cmake -S "$tmp" -B "$tmp"/build -G Ninja > /dev/null
+cmake --build "$tmp"/build 2>&1 | grep -E '^  "|^ld: |linker command failed'; echo "cmake --build exit status: ${PIPESTATUS[0]}"
+rm -r "$tmp"
+```
+
+Real output **[48]** (only the undefined-symbol lines and the linker's verdict are kept by the `grep`):
+
+```text
+  "mlir::toy::ConstantOp::build(mlir::OpBuilder&, mlir::OperationState&, double)", referenced from:
+  "mlir::toy::ConstantOp::parse(mlir::OpAsmParser&, mlir::OperationState&)", referenced from:
+  "mlir::toy::ConstantOp::print(mlir::OpAsmPrinter&)", referenced from:
+  "mlir::toy::ConstantOp::verify()", referenced from:
+  "mlir::toy::TransposeOp::build(mlir::OpBuilder&, mlir::OperationState&, mlir::Value)", referenced from:
+  "mlir::toy::TransposeOp::verify()", referenced from:
+  "mlir::toy::GenericCallOp::build(mlir::OpBuilder&, mlir::OperationState&, llvm::StringRef, llvm::ArrayRef<mlir::Value>)", referenced from:
+  "mlir::toy::AddOp::build(mlir::OpBuilder&, mlir::OperationState&, mlir::Value, mlir::Value)", referenced from:
+  "mlir::toy::AddOp::parse(mlir::OpAsmParser&, mlir::OperationState&)", referenced from:
+  "mlir::toy::AddOp::print(mlir::OpAsmPrinter&)", referenced from:
+  "mlir::toy::MulOp::build(mlir::OpBuilder&, mlir::OperationState&, mlir::Value, mlir::Value)", referenced from:
+  "mlir::toy::MulOp::parse(mlir::OpAsmParser&, mlir::OperationState&)", referenced from:
+  "mlir::toy::MulOp::print(mlir::OpAsmPrinter&)", referenced from:
+  "mlir::toy::FuncOp::build(mlir::OpBuilder&, mlir::OperationState&, llvm::StringRef, mlir::FunctionType, llvm::ArrayRef<mlir::NamedAttribute>)", referenced from:
+  "mlir::toy::FuncOp::parse(mlir::OpAsmParser&, mlir::OperationState&)", referenced from:
+  "mlir::toy::FuncOp::print(mlir::OpAsmPrinter&)", referenced from:
+  "mlir::toy::ReturnOp::verify()", referenced from:
+ld: symbol(s) not found for architecture arm64
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+cmake --build exit status: 1
+```
+
+- Everything compiles; only the link fails, with one undefined symbol per promised method. Appendix B.5 shows the same failure for a single method.
+- The 17 symbols are the to-do list for the rest of `Dialect.cpp`: the `build`, `parse`, `print` and `verify` methods of the seven ops in the table of appendix B.5. `PrintOp` and `ReshapeOp` are missing from it: their records ask for nothing hand-written.
+- `FuncOp::build` takes `(StringRef, FunctionType, ArrayRef<NamedAttribute>)`: the signature to implement comes straight from its `OpBuilder<(ins ...)>` in `Ops.td`.
+
+### 7.5 Step 5: one `create` per op in MLIRGen
+
+MLIRGen's emitting is `builder.create<OpTy>(loc, args...)`, which forwards `args...` to one of `OpTy::build(builder, state, args...)` (section 5.1). The overloads every op offers are in the generated declarations; the `sed` cuts the `OpBuilder &`/`OperationState &` pair that each one starts with, and the generic `(resultTypes, operands, attributes)` builder every op has is left out:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+I=/opt/homebrew/opt/llvm@20/include
+mlir-tblgen -gen-op-decls -I $I -I include include/toy/Ops.td \
+  | awk '/^class [A-Za-z]+Op :/ { c = $2 } /static void build\(/ { print c ": " $0 }' \
+  | sed 's/::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, //' \
+  | grep -v 'ValueRange operands'
+```
+
+Real output **[49]**:
+
+```text
+AddOp:   static void build(Value lhs, Value rhs);
+AddOp:   static void build(::mlir::Type resultType0, ::mlir::Value lhs, ::mlir::Value rhs);
+AddOp:   static void build(::mlir::TypeRange resultTypes, ::mlir::Value lhs, ::mlir::Value rhs);
+ConstantOp:   static void build(DenseElementsAttr value);
+ConstantOp:   static void build(double value);
+ConstantOp:   static void build(::mlir::Type resultType0, ::mlir::DenseElementsAttr value);
+ConstantOp:   static void build(::mlir::TypeRange resultTypes, ::mlir::DenseElementsAttr value);
+FuncOp:   static void build(StringRef name, FunctionType type, ArrayRef<NamedAttribute> attrs = {});
+GenericCallOp:   static void build(StringRef callee, ArrayRef<Value> arguments);
+GenericCallOp:   static void build(::mlir::Type resultType0, ::mlir::FlatSymbolRefAttr callee, ::mlir::ValueRange inputs);
+GenericCallOp:   static void build(::mlir::TypeRange resultTypes, ::mlir::FlatSymbolRefAttr callee, ::mlir::ValueRange inputs);
+GenericCallOp:   static void build(::mlir::Type resultType0, ::llvm::StringRef callee, ::mlir::ValueRange inputs);
+GenericCallOp:   static void build(::mlir::TypeRange resultTypes, ::llvm::StringRef callee, ::mlir::ValueRange inputs);
+MulOp:   static void build(Value lhs, Value rhs);
+MulOp:   static void build(::mlir::Type resultType0, ::mlir::Value lhs, ::mlir::Value rhs);
+MulOp:   static void build(::mlir::TypeRange resultTypes, ::mlir::Value lhs, ::mlir::Value rhs);
+PrintOp:   static void build(::mlir::Value input);
+PrintOp:   static void build(::mlir::TypeRange resultTypes, ::mlir::Value input);
+ReshapeOp:   static void build(::mlir::Type resultType0, ::mlir::Value input);
+ReshapeOp:   static void build(::mlir::TypeRange resultTypes, ::mlir::Value input);
+ReturnOp:   static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState);
+ReturnOp:   static void build(::mlir::ValueRange input);
+TransposeOp:   static void build(Value input);
+TransposeOp:   static void build(::mlir::Type resultType0, ::mlir::Value input);
+TransposeOp:   static void build(::mlir::TypeRange resultTypes, ::mlir::Value input);
+```
+
+- The overloads with unqualified types (`Value lhs`, `double value`, `StringRef callee`, ...) come from the `builders` fields of `Ops.td`, and so does `ReturnOp`'s empty one, whose `OpBuilder &`/`OperationState &` pair the `sed` leaves because nothing follows it. The `::mlir::`-qualified ones ODS generates from `arguments` and `results` (section 4.4, step 4).
+- The custom builders exist for MLIRGen's convenience. Those with a body in `Dialect.cpp` (the `build` symbols of section 7.4) set the result type themselves, `tensor<*xf64>` or `tensor<f64>` for the `double` constant, so the caller passes only the operands or the value.
+
+The calls MLIRGen makes, one or two per AST class of section 7.1:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+grep -n 'builder.create<' mlir/MLIRGen.cpp
+```
+
+Real output **[50]**:
+
+```text
+124:    return builder.create<mlir::toy::FuncOp>(location, proto.getName(),
+169:      builder.create<ReturnOp>(loc(funcAST.getProto()->loc()));
+205:      return builder.create<AddOp>(location, lhs, rhs);
+207:      return builder.create<MulOp>(location, lhs, rhs);
+238:    builder.create<ReturnOp>(location,
+283:    return builder.create<ConstantOp>(loc(lit.loc()), type, dataAttribute);
+328:      return builder.create<TransposeOp>(location, operands[0]);
+334:    return builder.create<GenericCallOp>(location, callee, operands);
+344:    builder.create<PrintOp>(loc(call.loc()), arg);
+350:    return builder.create<ConstantOp>(loc(num.loc()), num.getValue());
+394:      value = builder.create<ReshapeOp>(loc(vardecl.loc()),
+```
+
+- Each call picks one overload from the list above: `ConstantOp` the generated `(Type, DenseElementsAttr)` for a literal (line 283) and the custom `(double)` for a number (line 350); `ReturnOp` the custom empty builder for a function without `return` (line 169) and the generated `(ValueRange)` otherwise (line 238); `ReshapeOp` and `PrintOp` generated ones; `FuncOp`, `AddOp`, `MulOp`, `TransposeOp` and `GenericCallOp` their custom builders.
+- The `loc(...)` first argument of each call is the AST node's location (section 5.2).
+
+### 7.6 Step 6: extend Chapter 1's driver
+
+`toyc.cpp` keeps Chapter 1's command line and AST path. The MLIR lines it adds:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+diff ../Ch1/toyc.cpp toyc.cpp | grep -E '^> .*(#include|mlir::)'
+```
+
+Real output **[51]**:
+
+```text
+> #include "toy/Dialect.h"
+> #include "toy/MLIRGen.h"
+> #include <memory>
+> #include <string>
+> #include <system_error>
+> #include <utility>
+> #include "mlir/IR/AsmState.h"
+> #include "mlir/IR/BuiltinOps.h"
+> #include "mlir/IR/MLIRContext.h"
+> #include "mlir/Parser/Parser.h"
+> #include "llvm/Support/SourceMgr.h"
+>   mlir::MLIRContext context;
+>   context.getOrLoadDialect<mlir::toy::ToyDialect>();
+>     mlir::OwningOpRef<mlir::ModuleOp> module = mlirGen(context, *moduleAST);
+>   mlir::OwningOpRef<mlir::ModuleOp> module =
+>       mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &context);
+>   mlir::registerAsmPrinterCLOptions();
+>   mlir::registerMLIRContextCLOptions();
+```
+
+- Four steps, each with its header: create an `MLIRContext` and load the dialect into it (section 3.3), call `mlirGen` (section 5), parse `.mlir` input with `parseSourceFile` (`mlir/Parser/Parser.h`), and register MLIR's printing and context flags (section 5.6).
+- The other new lines are the plain C++ and `llvm::` code around them: the `-x` and `-emit=mlir` options and the file reading (section 5.6).
+
+### 7.7 Step 7: wire TableGen and the MLIR libraries into the build
+
+Chapter 1's `CMakeLists.txt` compiles two C++ files and links `MLIRSupport`. Chapter 2's code needs two more things from the build: the four generated `.inc` files must exist before the C++ that includes them compiles, and the program must link the MLIR IR library. Both can be read off what is already written. The `#include`s of section 7.3 and the `Dialect.cpp` skeleton of section 7.4 name the files to generate; `mlir-tblgen --help` lists a generator for each; and the installed CMake package defines the functions that turn a generator into a build rule:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+grep -n '#include "toy/.*\.inc"' include/toy/Dialect.h mlir/Dialect.cpp
+mlir-tblgen --help | grep -E -- '-gen-(op|dialect)-(decls|defs) '
+L=/opt/homebrew/opt/llvm@20/lib/cmake
+grep -nE '^function\((mlir_tablegen|add_public_tablegen_target) ' $L/mlir/AddMLIR.cmake $L/llvm/TableGen.cmake | sed "s|$L/||"
+head -1 $L/llvm/TableGen.cmake
+```
+
+Real output **[52]**:
+
+```text
+include/toy/Dialect.h:26:#include "toy/Dialect.h.inc"
+include/toy/Dialect.h:31:#include "toy/Ops.h.inc"
+mlir/Dialect.cpp:35:#include "toy/Dialect.cpp.inc"
+mlir/Dialect.cpp:46:#include "toy/Ops.cpp.inc"
+mlir/Dialect.cpp:322:#include "toy/Ops.cpp.inc"
+      --gen-dialect-decls                               - Generate dialect declarations
+      --gen-dialect-defs                                - Generate dialect definitions
+      --gen-op-decls                                    - Generate op declarations
+      --gen-op-defs                                     - Generate op definitions
+mlir/AddMLIR.cmake:4:function(mlir_tablegen ofn)
+llvm/TableGen.cmake:161:function(add_public_tablegen_target target)
+# LLVM_TARGET_DEFINITIONS must contain the name of the .td file to process,
+```
+
+- **Four files, four generators:** `.h.inc` files hold declarations (`-gen-*-decls`), `.cpp.inc` files definitions (`-gen-*-defs`); `Dialect.*` comes from the dialect generators, `Ops.*` from the op generators. That is the table of appendix E.1, derived instead of copied.
+- **The rules:** `LLVM_TARGET_DEFINITIONS` names the `.td` input, `mlir_tablegen(<output> <generator>)` adds one rule per file, and `add_public_tablegen_target` collects the rules into a target that the executable can depend on. Those are the six lines of `include/toy/CMakeLists.txt`; the chapter's `CMakeLists.txt` reaches them with `add_subdirectory(include)`, adds the generated files' directory to the include path, and makes `toyc-ch2` depend on the target (appendix E.1).
+
+The link line comes from the linker, as `Dialect.cpp`'s methods did in section 7.4. Two scratch copies, one linking Chapter 1's `MLIRSupport` and one linking only `MLIR` (each built by `awk`-patching the link line; about 10 seconds each), count the undefined symbols by namespace:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+for libs in MLIRSupport MLIR; do
+  S=$(mktemp -d)
+  cp -R toyc.cpp parser mlir include "$S"/
+  awk -v libs="$libs" '/^    MLIR  /{ print "    " libs; next } /^    LLVM  /{ next } { print }' CMakeLists.txt > "$S"/CMakeLists.txt
+  cmake -S "$S" -B "$S"/build -G Ninja > /dev/null
+  echo "== link line: $libs"
+  cmake --build "$S"/build 2>&1 | grep -E '^  "' | sed -E 's/^  "(typeinfo for |vtable for )?([a-z]+)::.*/\2::/' | sort | uniq -c
+  rm -rf "$S"
+done
+```
+
+Real output **[53]**:
+
+```text
+== link line: MLIRSupport
+   2 llvm::
+ 137 mlir::
+== link line: MLIR
+  51 llvm::
+```
+
+- **`MLIRSupport` is not enough:** it is the small support library Chapter 1 needed, and it doesn't hold the IR. The 137 `mlir::` symbols (`Operation`, `Builder`, `Dialect`, `OpTrait`, …) and the two `llvm::` ones (list hooks specialized for `mlir::Operation`) are all MLIR IR code, which Homebrew ships in `libMLIR.dylib`: link `MLIR`.
+- **`MLIR` alone is not enough either:** the 51 `llvm::` symbols are the `raw_ostream` and `cl::opt` code that `toyc.cpp` and the AST dumper call directly. `libMLIR.dylib` uses `libLLVM.dylib` itself, but a macOS program must link every library it calls into, so `LLVM` goes on the line too (appendix E.1).
+
+**The build is derived like the code: the `#include`s name the files TableGen must generate, and the linker names the libraries.**
+
+---
+
+## 8. Key Takeaways & Pitfalls
 
 **Takeaways**
 
@@ -3046,6 +3467,7 @@ class AddOp : public ::mlir::Op
 5. **MLIRGen is small on purpose**: a stateful `OpBuilder` (insertion point!), a `ScopedHashTable` symbol table, a `loc()` helper, and one `mlirGen` overload per AST node (section 5). Parameters and call results are left unranked (`tensor<*xf64>`); inference comes in Chapter 4, reshape cleanups in Chapter 3.
 6. **Round-tripping is the cheapest dialect test you'll ever write**: it checks printers and parsers against each other, and re-runs the verifiers (section 6.3).
 7. **The generic form is the ground truth**: every op, registered or not, reduces to name, operands, attributes, result types, location, successors and regions, and `-mlir-print-op-generic` shows it. Custom formats are just sugar over it. Inherent attributes are *properties*, printed as `<{...}>` (appendix C.1).
+8. **Design the IR before the code that produces it**: the generic form needs no dialect, so the target IR can be written by hand and checked with stock `mlir-opt` first, and later serves as the test that MLIRGen emits exactly it; the linker then lists every method the `.td` promised, and every library the build must link (section 7).
 
 **Pitfalls**
 
@@ -3165,7 +3587,7 @@ toy.func @f(%a: tensor<2xf64>, %b: tensor<*xf64>) -> tensor<*xf64> {
 EOF
 ```
 
-Real output **[44]**:
+Real output **[54]**:
 
 ```mlir
 module {
@@ -3347,7 +3769,7 @@ toy.func @main() {
 EOF
 ```
 
-Real output **[45]** (exit status 3):
+Real output **[55]** (exit status 3):
 
 ```text
 loc("<stdin>":3:8): error: 'toy.reshape' op result #0 must be statically shaped tensor of 64-bit float values, but got 'tensor<*xf64>'
@@ -3493,7 +3915,7 @@ toy.func @main() {
 EOF
 ```
 
-Real output **[46]** (exit status 3):
+Real output **[56]** (exit status 3):
 
 ```text
 loc("<stdin>":4:8): error: expected result shape to be a transpose of the input
@@ -3568,7 +3990,7 @@ sed '/SideEffectInterfaces.td/d' include/toy/Ops.td \
   | mlir-tblgen -gen-op-decls -I /opt/homebrew/opt/llvm@20/include
 ```
 
-Real output **[47]** (exit status 1; line 47 because the `sed` removed one line above it):
+Real output **[57]** (exit status 1; line 47 because the `sed` removed one line above it):
 
 ```text
 <stdin>:47:38: error: Variable not defined: 'Pure'
@@ -3604,7 +4026,7 @@ cd /Users/roy/study/mlir/toy/Ch2
 mlir-tblgen -gen-op-decls include/toy/Ops.td -I /opt/homebrew/opt/llvm@20/include | awk '/^class TransposeOp : /,/^};/'
 ```
 
-Real output **[48]** (abridged):
+Real output **[58]** (abridged):
 
 ```cpp
 class TransposeOp : public ::mlir::Op<TransposeOp, ::mlir::OpTrait::ZeroRegions, ::mlir::OpTrait::OneResult, ::mlir::OpTrait::OneTypedResult<::mlir::TensorType>::Impl, ::mlir::OpTrait::ZeroSuccessors, ::mlir::OpTrait::OneOperand, ::mlir::OpTrait::OpInvariants> {
@@ -3641,7 +4063,7 @@ mlir-tblgen -gen-op-defs include/toy/Ops.td -I /opt/homebrew/opt/llvm@20/include
   | awk '/^::llvm::LogicalResult TransposeOp::verifyInvariants\(\) \{/,/^}/'
 ```
 
-Real output **[49]**:
+Real output **[59]**:
 
 ```cpp
 ::llvm::LogicalResult TransposeOp::verifyInvariants() {
@@ -3694,7 +4116,7 @@ cmake --build "$tmp"/build 2>&1 | sed -n '/^Undefined symbols/,/linker command f
 rm -r "$tmp"
 ```
 
-Real output **[50]** (the build's progress lines are cut by the second `sed`, and the second caller's trait list is abridged):
+Real output **[60]** (the build's progress lines are cut by the second `sed`, and the second caller's trait list is abridged):
 
 ```text
 Undefined symbols for architecture arm64:
@@ -3728,7 +4150,7 @@ The generic dump of section 4.5 shows three things that come from how MLIR 20 pr
     | awk '/^def Toy_Dialect /,/^}/' | grep usePropertiesForAttributes
   ```
 
-  Real output **[51]**:
+  Real output **[61]**:
 
   ```text
     bit usePropertiesForAttributes = 1;
@@ -3741,7 +4163,7 @@ The generic dump of section 4.5 shows three things that come from how MLIR 20 pr
   ./build/toyc-ch2 ../../test_Example/Toy/Ch2/codegen.toy -emit=mlir -mlir-print-unique-ssa-ids 2>&1 | sed -n '2,6p'
   ```
 
-  Real output **[52]**:
+  Real output **[62]**:
 
   ```mlir
     toy.func @multiply_transpose(%arg0: tensor<*xf64>, %arg1: tensor<*xf64>) -> tensor<*xf64> {
@@ -3765,7 +4187,7 @@ cd /Users/roy/study/mlir/toy/Ch2
   | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
 ```
 
-Real output **[53]** (exit status 1; the dialect list is abridged):
+Real output **[63]** (exit status 1; the dialect list is abridged):
 
 ```text
 <stdin>:2:3: error: Dialect `toy' not found for custom op 'toy.func' 
@@ -3787,7 +4209,7 @@ cd /Users/roy/study/mlir/toy/Ch2
   | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
 ```
 
-Real output **[54]** (abridged, exit status 0):
+Real output **[64]** (abridged, exit status 0):
 
 ```mlir
 module {
@@ -3810,7 +4232,7 @@ cd /Users/roy/study/mlir/toy/Ch2
   | /opt/homebrew/opt/llvm@20/bin/mlir-opt
 ```
 
-Real output **[55]** (exit status 1):
+Real output **[65]** (exit status 1):
 
 ```text
 <stdin>:2:13: error: operation being parsed with an unregistered dialect. If this is intended, please use -allow-unregistered-dialect with the MLIR tool used
@@ -3851,7 +4273,7 @@ cd /Users/roy/study/mlir/toy/Ch2
 ./build/toyc-ch2 ../../test_Example/Toy/Ch2/scalar.toy -emit=mlir 2>&1
 ```
 
-Real output **[56]**:
+Real output **[66]**:
 
 ```mlir
 module {
@@ -3882,7 +4304,7 @@ cd /Users/roy/study/mlir/toy/Ch2
 ./build/toyc-ch2 ../../test_Example/Toy/Ch2/empty.toy -emit=mlir 2>&1
 ```
 
-Real output **[57]** (exit status 0):
+Real output **[67]** (exit status 0):
 
 ```text
 Parse error (4, 0): expected 'def' in prototype but has Token -1
@@ -3901,7 +4323,7 @@ cd /Users/roy/study/mlir/toy/Ch2
 ./build/toyc-ch2 ../../test_Example/Toy/Ch2/ast.toy -emit=ast 2>&1
 ```
 
-Real output **[58]** (abridged):
+Real output **[68]** (abridged):
 
 ```text
   Module:
@@ -3996,14 +4418,16 @@ cd /Users/roy/study/mlir/toy/Ch2
 ./examples.sh -l
 ```
 
-Real output **[59]** (abridged):
+Real output **[69]** (abridged):
 
 ```text
 [ 1] 2.3   ./build/toyc-ch2 ../../test_Example/Toy/Ch2/codegen.toy -emit=mlir -mlir-print-op-generic -mlir-print-debuginfo 2>&1
 [ 2] 2.4   mlir-opt <<'EOF'
 ...
-[58] D.3   ./build/toyc-ch2 ../../test_Example/Toy/Ch2/ast.toy -emit=ast 2>&1
-[59] F     ./examples.sh -l
+[44] 7.1   grep -n '^class' include/toy/AST.h
+...
+[68] D.3   ./build/toyc-ch2 ../../test_Example/Toy/Ch2/ast.toy -emit=ast 2>&1
+[69] F     ./examples.sh -l
 ```
 
 The script doesn't keep its own copy of the commands: it reads them from `README.md` on every run. A command is every `bash` code block in file order, except the build block (its first command after `cd` is `cmake`) and file excerpts (a `***path***` label above the fence, like `run_mlir-tblgen.sh` in section 6.4). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". Adding, removing or reordering a command block therefore renumbers the ones after it.

@@ -15,7 +15,7 @@ Everything the previous chapters manipulated was a single type: an `f64` tensor.
 | **AST** | `StructAST`, `StructLiteralExprAST`, a `RecordAST` base class, `VarType` grows a `name` field |
 | **MLIR type system** | A new `StructType` with a hand-written `StructTypeStorage` (the type-uniquing pattern) |
 | **Dialect** | `addTypes<StructType>()`, custom `parseType`/`printType` for `!toy.struct<...>` |
-| **Ops (ODS)** | New `toy.struct_constant` and `toy.struct_access`; `Toy_Type` constraint so `return`/`generic_call` accept structs |
+| **Ops (ODS, Operation Definition Specification)** | New `toy.struct_constant` and `toy.struct_access`; `Toy_Type` constraint so `return`/`generic_call` accept structs |
 | **MLIRGen** | Struct declaration tracking (`structMap`), literal codegen as `ArrayAttr`, member access as an index |
 | **Optimization** | `fold()` hooks (`FoldAdaptor`), the dialect `materializeConstant` hook — so after inlining, structs *disappear entirely* |
 | **Lowering / JIT** | Nothing! Once folding removes the structs, the Ch6 pipeline lowers and JITs the code unchanged |
@@ -23,6 +23,8 @@ Everything the previous chapters manipulated was a single type: an `f64` tensor.
 That last row is the punchline of this chapter: we never write a lowering for `StructType`. Instead, the design leans on **inlining + constant folding** — structs only exist as compile-time aggregates in this toy language, so once functions are inlined and constants are propagated, every `struct_access` of a `struct_constant` folds to a plain tensor constant, and the Ch5/Ch6 lowering pipeline works untouched.
 
 This is a very common pattern in real MLIR-based compilers: high-level types that carry structure through the frontend, then evaporate before lowering.
+
+After Build and Run, section 10 shows how to derive the chapter's code yourself: Chapter 6's parser lists the new syntax, `mlir-tblgen` writes the type class from a `TypeDef`, stock `.td` files supply the ODS hooks, and scratch builds show what the folding needs.
 
 The appendices hold the extras: the `-opt` pipeline pass by pass (A), more inputs — a nested struct and the error paths (B), a custom type outside its dialect (C), what Chapter 7 adds to the build (D), and the script that runs every command in this README (E).
 
@@ -117,7 +119,18 @@ and `getTok()` recognizes the keyword alongside the others:
       return tok_identifier;
 ```
 
-That is the *entire* lexer change. `.`, `{`, `}` were already single-character tokens.
+One more rule changes: a number now has to start with a digit, so that the `.` of a member access reaches the parser as a single-character token, like `{` and `}` (section 10.2 shows what the old rule does to `value.a`):
+
+***include/toy/Lexer.h***
+```cpp
+    // Number: [0-9] ([0-9.])*
+    if (isdigit(lastChar)) {
+      std::string numStr;
+      do {
+        numStr += lastChar;
+        lastChar = Token(getNextChar());
+      } while (isdigit(lastChar) || lastChar == '.');
+```
 
 ### 2.3 AST: records, struct definitions, struct literals
 
@@ -1558,7 +1571,7 @@ round trip identical
 
 ## 8. Optimizing Operations on `StructType`
 
-With a few ops working on `StructType`, there are many new constant-folding opportunities. With `-opt` (or any `-emit` past `mlir`), the pipeline in `toyc.cpp` runs the **inliner**, then per function **canonicalizer → shape inference → canonicalizer → CSE**. (Compared with Chapter 6, the only pipeline change in `toyc.cpp` is the first of those canonicalizers.) After inlining, `main` contains a `struct_constant` feeding `struct_access` ops, a chain the folder can collapse completely.
+With a few ops working on `StructType`, there are many new constant-folding opportunities. With `-opt` (or any `-emit` past `mlir`), the pipeline in `toyc.cpp` runs the **inliner**, then per function **canonicalizer → shape inference → canonicalizer → CSE** (common subexpression elimination). (Compared with Chapter 6, the only pipeline change in `toyc.cpp` is the first of those canonicalizers.) After inlining, `main` contains a `struct_constant` feeding `struct_access` ops, a chain the folder can collapse completely.
 
 ### 8.1 After inlining
 
@@ -1811,7 +1824,7 @@ For more on custom types, [Defining Dialect Attributes and Types](https://mlir.l
 
 The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 7 on its own, from the chapter directory.
 
-Every command in this README is numbered by its output (**[1]**–**[25]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix E).
+Every command in this README is numbered by its output (**[1]**–**[32]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix E).
 
 ### 9.1 Building
 
@@ -1939,7 +1952,326 @@ Real output **[17]** (`transpose(a) * transpose(a)` for `a = [[1, 2, 3], [4, 5, 
 9.000000 36.000000 
 ```
 
-## 10. Key Takeaways & Pitfalls
+---
+
+## 10. Deriving the Chapter 7 struct type yourself
+
+Sections 2–8 explain the chapter's code as it is. This section shows how to arrive at it without having it. Chapter 7 adds no file: every change is an edit to a file Chapter 6 already has, and the build is unchanged (appendix D). Most of the changes are forced by an error from Chapter 6's code or are generated for you by a stock tool:
+
+| Part | Lines | Where it comes from |
+|---|---|---|
+| `include/toy/Lexer.h`: `tok_struct` | 47, 148–149 | Chapter 6's parser reading `struct` as an identifier (section 10.1) |
+| `include/toy/Lexer.h`: a number must start with a digit | 155–156 | The lexer error on `value.a` (section 10.2) |
+| `include/toy/AST.h`, `parser/AST.cpp`, `include/toy/Parser.h`: `StructAST`, `RecordAST`, `StructLiteralExprAST`, `VarType::name`, typed parameters | — | One AST node or parse function per Chapter 6 parse error (section 10.1), explained in sections 2.3–2.5 |
+| `include/toy/Dialect.h`: the `StructTypeStorage` forward declaration and `StructType` | 27–33, 48–80 | The C++ that `mlir-tblgen` generates for the same type written as an ODS `TypeDef` (section 10.3) |
+| `mlir/Dialect.cpp`: `StructTypeStorage`, `StructType::get`, `getElementTypes` | 508–578 | The same generated C++ (section 10.3) |
+| `include/toy/Ops.td`: the two dialect bits, `Toy_StructType`, `Toy_Type`, the widened `generic_call`/`return` | 31–35, 47–55, 242–260, 356 | The stock `DialectBase.td` and `CommonTypeConstraints.td` (section 10.4) |
+| `mlir/Dialect.cpp`: `parseType`/`printType`, `addTypes<StructType>()` | 581–631, 652 | The hooks `useDefaultTypePrinterParser` declares (section 10.4), the abort without registration (section 3.2) |
+| `include/toy/Ops.td`, `mlir/Dialect.cpp`: `toy.struct_constant`, `toy.struct_access`, their builders and verifiers, `GenericCallOp`'s result-type builder | 379–430; 197–261, 352–360, 445–467 | `arith.constant`'s fields for the constant op (section 10.4), the builders `mlir-tblgen` generates (section 10.5) |
+| `mlir/MLIRGen.cpp`: `structMap`, `functionMap`, the symbol table of declarations, `getStructFor`/`getMemberIndex`, `getConstantAttr` | — | The builders of section 10.5, fed with what only the AST knows: names (sections 7.1–7.3) |
+| `hasFolder`, `hasConstantMaterializer`, the three `fold` hooks in `mlir/ToyCombine.cpp`, `materializeConstant` | Ops.td 31, 111, 401, 429; ToyCombine.cpp 30–45; Dialect.cpp 655–664 | `arith.constant`'s pattern (section 10.4), then the error without the access folder (section 10.6) |
+| `include/toy/Ops.td`, `mlir/Dialect.cpp`: `toy.constant`'s `ShapeInferenceOpInterface` and `inferShapes` | 69–71, 264–266 | The error when the folder's constant can't be shape-inferred (section 10.6) |
+| `toyc.cpp`: a canonicalizer before shape inference; `mlir/LowerToLLVM.cpp`: `populateAssertToLLVMConversionPattern` | 166; 224 | Not forced by any test input (section 10.7) |
+
+The steps use the chapter's test program, `struct-codegen.toy` (section 2.1).
+
+### 10.1 Step 1: let Chapter 6's parser list the new syntax
+
+Before writing any frontend code, feed each new piece of syntax to Chapter 6's binary (built as in Ch6 section 4.1) and read where it stops. One snippet per construct: a struct definition, a struct-typed parameter, a struct-typed variable, a struct literal, and a member access:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch7
+for p in 'struct S {\n  var a;\n}' 'def f(S v) {\n}' 'def main() {\n  S v = [1];\n}' 'def main() {\n  var v = {[1], [2]};\n}' 'def main() {\n  var v = [1];\n  print(v.a);\n}'; do
+  printf '== %s\n' "$p"
+  printf "$p\n" | ../Ch6/build/toyc-ch6 -emit=ast 2>&1 | head -1
+done
+```
+
+Real output **[18]**:
+
+```text
+== struct S {\n  var a;\n}
+Parse error (1, 1): expected 'def' in prototype but has Token -5
+== def f(S v) {\n}
+Parse error (1, 9): expected ')' to end function prototype but has Token -5
+== def main() {\n  S v = [1];\n}
+Parse error (2, 5): expected ';' after expression but has Token -5
+== def main() {\n  var v = {[1], [2]};\n}
+unknown token '123' when expecting an expression
+== def main() {\n  var v = [1];\n  print(v.a);\n}
+Parse error (3, 10): expected ', or )' in argument list but has Token -6
+```
+
+Each error is one item of section 2's frontend work:
+
+- **`struct S`:** Token -5 is Chapter 6's `tok_identifier`, so `struct` is just a name and the module parser expects `def`. It needs a keyword token (section 2.2), a record kind next to functions (`RecordAST`, `StructAST`, section 2.3), and a `parseStruct` in the module loop (section 2.4).
+- **`def f(S v)` and `S v = ...`:** a type name where Chapter 6 only knows `var` or a bare parameter name. Parameters become declarations with a type, and `VarType` grows a `name` (sections 2.3–2.4).
+- **`{[1], [2]}`:** `{` (character 123) can't start an expression; the struct literal needs its own AST node and parse function (`StructLiteralExprAST`, `parseStructLiteralExpr`).
+- **`v.a`:** the error is at column 10, the `.`, and the token is -6, Chapter 6's `tok_number`: the lexer has read `.a` as the start of a number. That is the subject of step 2.
+
+### 10.2 Step 2: let `value.a` show the lexer change
+
+The `.` of a member access has to reach the parser as a character, but Chapter 6's lexer starts a number at a `.` (`// Number: [0-9.]+`). Chapter 7 requires a digit first (section 2.2). A scratch copy with Chapter 6's rule put back (by `sed`; the build takes about 20 seconds) parses the test program:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch7
+S=$(mktemp -d)
+cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
+sed -i '' "s/^    if (isdigit(lastChar)) {$/    if (isdigit(lastChar) || lastChar == '.') {/" "$S"/include/toy/Lexer.h
+cmake -S "$S" -B "$S"/build -G Ninja >/dev/null && cmake --build "$S"/build >/dev/null
+"$S"/build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-codegen.toy -emit=ast 2>&1; echo "toyc-ch7 exit status: $?"
+rm -rf "$S"
+```
+
+Real output **[19]**:
+
+```text
+Parse error (12, 25): expected ', or )' in argument list but has Token -7
+Parse error (12, 25): expected ';' after expression but has Token -7
+Parse error (12, 25): expected 'nothing' at end of module but has Token -7
+toyc-ch7 exit status: 1
+```
+
+- Line 12, column 25 is the `.` of `value.a` in `return transpose(value.a) * ...`, and Token -7 is Chapter 7's `tok_number`: with the old rule, `.` starts a number even though Chapter 7's parser already knows `.` as a binary operator (section 2.4).
+- With the digit-first rule, `.` falls through to the single-character case, like `{` and `}`. The price is that a number can no longer be written as `.5`.
+
+**A new operator character can collide with a token the lexer already claims; run the new syntax through the old lexer before blaming the parser.**
+
+### 10.3 Step 3: let `mlir-tblgen` write the type class
+
+A hand-written type has the same shape as the class ODS generates from a declarative `TypeDef`, so the quickest way to learn what `StructTypeStorage` and `StructType` need is to declare the type that way (not this repo's code) and read the C++ `mlir-tblgen` prints. The `TypeDef` lists one parameter, the element types:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch7
+I=/opt/homebrew/opt/llvm@20/include
+TD=$(cat <<'EOF'
+include "mlir/IR/AttrTypeBase.td"
+
+def Toy_Dialect : Dialect {
+  let name = "toy";
+  let cppNamespace = "::mlir::toy";
+}
+
+def Toy_StructType : TypeDef<Toy_Dialect, "Struct"> {
+  let mnemonic = "struct";
+  let parameters = (ins ArrayRefParameter<"mlir::Type">:$elementTypes);
+  let hasCustomAssemblyFormat = 1;
+}
+EOF
+)
+echo "$TD" | mlir-tblgen -gen-typedef-decls -I $I | awk '/^namespace detail/,/^};/'
+echo "$TD" | mlir-tblgen -gen-typedef-defs -I $I | awk '/^struct StructTypeStorage/,/^};/'
+```
+
+Real output **[20]**:
+
+```cpp
+namespace detail {
+struct StructTypeStorage;
+} // namespace detail
+class StructType : public ::mlir::Type::TypeBase<StructType, ::mlir::Type, detail::StructTypeStorage> {
+public:
+  using Base::Base;
+  static constexpr ::llvm::StringLiteral name = "toy.struct";
+  static constexpr ::llvm::StringLiteral dialectName = "toy";
+  static StructType get(::mlir::MLIRContext *context, ::llvm::ArrayRef<mlir::Type> elementTypes);
+  static constexpr ::llvm::StringLiteral getMnemonic() {
+    return {"struct"};
+  }
+
+  static ::mlir::Type parse(::mlir::AsmParser &odsParser);
+  void print(::mlir::AsmPrinter &odsPrinter) const;
+  ::llvm::ArrayRef<mlir::Type> getElementTypes() const;
+};
+struct StructTypeStorage : public ::mlir::TypeStorage {
+  using KeyTy = std::tuple<::llvm::ArrayRef<mlir::Type>>;
+  StructTypeStorage(::llvm::ArrayRef<mlir::Type> elementTypes) : elementTypes(std::move(elementTypes)) {}
+
+  KeyTy getAsKey() const {
+    return KeyTy(elementTypes);
+  }
+
+  bool operator==(const KeyTy &tblgenKey) const {
+    return (elementTypes == std::get<0>(tblgenKey));
+  }
+
+  static ::llvm::hash_code hashKey(const KeyTy &tblgenKey) {
+    return ::llvm::hash_combine(std::get<0>(tblgenKey));
+  }
+
+  static StructTypeStorage *construct(::mlir::TypeStorageAllocator &allocator, KeyTy &&tblgenKey) {
+    auto elementTypes = std::move(std::get<0>(tblgenKey));
+    elementTypes = allocator.copyInto(elementTypes);
+    return new (allocator.allocate<StructTypeStorage>()) StructTypeStorage(std::move(elementTypes));
+  }
+
+  ::llvm::ArrayRef<mlir::Type> elementTypes;
+};
+```
+
+Side by side with the repo's hand-written classes (sections 3.1–3.2):
+
+| Generated | Hand-written | Difference |
+|---|---|---|
+| `namespace detail { struct StructTypeStorage; }` before the class | The same forward declaration in `Dialect.h` | none: the header sees only the declaration |
+| `TypeBase<StructType, Type, detail::StructTypeStorage>`, `using Base::Base` | The same | none |
+| `name = "toy.struct"` | The same | the generated class also has `dialectName`, which `addTypes<>()` doesn't need |
+| `get(MLIRContext *, ArrayRef<Type>)` | `get(ArrayRef<Type>)` | the repo takes the context from the first element, hence its "at least one element" `assert` |
+| `getElementTypes() const` | `getElementTypes()` and `getNumElementTypes()` | the repo adds a size helper for `StructAccessOp` |
+| `KeyTy = std::tuple<ArrayRef<Type>>` | `KeyTy = ArrayRef<Type>` | one parameter needs no tuple |
+| `operator==`, `hashKey` (`hash_combine`) | `operator==`, `hashKey` (`hash_value`), `getKey` | same role (section 3.1's table) |
+| `construct`: `allocator.copyInto(...)`, then placement `new` | The same two steps | none: the copy into the context's allocator is the part that must not be forgotten |
+| `parse`/`print` per type | `ToyDialect::parseType`/`printType` | the repo has one type, so the dialect hooks parse and print it directly (section 5) |
+
+**When writing a type by hand, write it as a `TypeDef` first and read the generated storage class: it lists every member the `StorageUniquer` needs, including the `copyInto` that is easy to miss.**
+
+### 10.4 Step 4: find the ODS hooks in the stock `.td` files
+
+The `Ops.td` side needs three things ODS already offers: dialect bits for the type hooks and the constant materializer, a way to name a C++ type in a constraint, and a model for a constant op that folds. `grep` finds them in the installed `.td` files, and `arith.constant` shows the pattern in use:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch7
+I=/opt/homebrew/opt/llvm@20/include
+grep -n 'bit hasConstantMaterializer\|bit useDefaultTypePrinterParser' $I/mlir/IR/DialectBase.td
+grep -n '^class DialectType<Dialect' $I/mlir/IR/CommonTypeConstraints.td
+grep -n 'hasConstantMaterializer' $I/mlir/Dialect/Arith/IR/ArithBase.td
+awk '/^def Arith_ConstantOp/,/^}/' $I/mlir/Dialect/Arith/IR/ArithOps.td | grep -E 'def Arith_ConstantOp|ConstantLike|hasFolder'
+```
+
+Real output **[21]**:
+
+```text
+59:  bit hasConstantMaterializer = 0;
+88:  bit useDefaultTypePrinterParser = 0;
+115:class DialectType<Dialect d, Pred condition, string descr = "",
+30:  let hasConstantMaterializer = 1;
+def Arith_ConstantOp : Op<Arith_Dialect, "constant",
+    [ConstantLike, Pure,
+  let hasFolder = 1;
+```
+
+- **The two dialect bits** default to `0`; `Toy_Dialect` sets both (section 5): `useDefaultTypePrinterParser` declares `parseType`/`printType`, whose bodies are the hand-written hooks of section 5.1, and `hasConstantMaterializer` declares `materializeConstant` (section 8.3).
+- **`DialectType<Dialect, Pred, descr>`** wraps a C++ predicate into a type constraint, which is how `Toy_StructType` names the hand-written `StructType` (section 4); `AnyTypeOf` then combines it with `F64Tensor` into `Toy_Type`, which widens `generic_call` and `return` (section 6.1).
+- **`arith.constant`** is the stock model of a constant that takes part in folding: `ConstantLike` and `Pure` traits, `hasFolder`, and a dialect with a materializer. `toy.struct_constant` copies all three (section 6.2), and `toy.constant` gains `ConstantLike` and `hasFolder` (section 6.1).
+
+### 10.5 Step 5: find the builders MLIRGen calls
+
+MLIRGen creates the new ops with `builder.create<OpTy>(loc, args...)`, which picks one of the op's `build` overloads. `mlir-tblgen` lists them for the three ops MLIRGen creates differently in this chapter (the `TypeRange` variants are left out):
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch7
+mlir-tblgen -gen-op-decls -I include -I /opt/homebrew/opt/llvm@20/include include/toy/Ops.td \
+  | awk '/^class (GenericCallOp|StructAccessOp|StructConstantOp) :/,/^};/' \
+  | grep -E '^class|static void build' | grep -v TypeRange | sed -E 's/^class ([A-Za-z]+) :.*/class \1/'
+```
+
+Real output **[22]**:
+
+```text
+class GenericCallOp
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, Type result_type, StringRef callee, ArrayRef<Value> arguments);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, ::mlir::Type resultType0, ::mlir::FlatSymbolRefAttr callee, ::mlir::ValueRange inputs, /*optional*/::mlir::ArrayAttr arg_attrs, /*optional*/::mlir::ArrayAttr res_attrs);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, ::mlir::Type resultType0, ::llvm::StringRef callee, ::mlir::ValueRange inputs, /*optional*/::mlir::ArrayAttr arg_attrs, /*optional*/::mlir::ArrayAttr res_attrs);
+class StructAccessOp
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, Value input, size_t index);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, ::mlir::Type output, ::mlir::Value input, ::mlir::IntegerAttr index);
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, ::mlir::Type output, ::mlir::Value input, uint64_t index);
+class StructConstantOp
+  static void build(::mlir::OpBuilder &odsBuilder, ::mlir::OperationState &odsState, ::mlir::Type output, ::mlir::ArrayAttr value);
+```
+
+Each builder's arguments are what MLIRGen has to compute, and each one that the AST doesn't hold directly becomes a piece of MLIRGen state:
+
+- **`StructConstantOp(Type output, ArrayAttr value)`:** the struct type and one attribute per member. `getConstantAttr(StructLiteralExprAST&)` builds both together, recursing for nested literals (section 7.2).
+- **`StructAccessOp(Value input, size_t index)`:** the first builder is the repo's own (section 6.3); it derives the result type from the struct, so MLIRGen only needs an index. The AST has a member *name*, so MLIRGen keeps each variable's declaration in the symbol table and the struct's AST in `structMap`, and `getStructFor`/`getMemberIndex` turn the name into the index (sections 7.1, 7.3).
+- **`GenericCallOp(Type result_type, StringRef callee, ...)`:** Chapter 6's builder always added `tensor<*xf64>`; a callee may now return a struct, so the builder takes the result type, and MLIRGen reads it from the callee's signature through `functionMap`. That map is also why a function must be defined before it is called.
+- **Types of parameters and declarations:** a struct name resolves through `structMap` in `getType(VarType, ...)` (section 7.1).
+
+The module these calls must produce is section 7.4's; it can be written by hand and parsed with `-x mlir` before MLIRGen exists, as section 8.1 does.
+
+### 10.6 Step 6: let the pipeline show what folding needs
+
+There is no lowering for `StructType`: the structs have to fold away before shape inference and lowering run (section 8.4). Two scratch copies show what that takes. The first leaves out `StructAccessOp`'s folder (`hasFolder` and `fold`); the second leaves out `toy.constant`'s shape inference (its `ShapeInferenceOpInterface` and `inferShapes`). Both build in about 40 seconds. Then the real binary prints the location of the constant the folder creates:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch7
+S=$(mktemp -d)
+for v in no-access-folder no-constant-shapes; do
+  mkdir "$S"/$v && cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/$v/
+done
+sed -i '' '/fold constant accesses/{n;d;}' "$S"/no-access-folder/include/toy/Ops.td
+sed -i '' '/^OpFoldResult StructAccessOp::fold/,/^}/d' "$S"/no-access-folder/mlir/ToyCombine.cpp
+sed -i '' -e 's/^    \[ConstantLike, Pure,$/    [ConstantLike, Pure]> {/' \
+  -e '/^     DeclareOpInterfaceMethods<ShapeInferenceOpInterface>\]> {$/d' "$S"/no-constant-shapes/include/toy/Ops.td
+sed -i '' '/^void ConstantOp::inferShapes() {$/,/^}/d' "$S"/no-constant-shapes/mlir/Dialect.cpp
+for v in no-access-folder no-constant-shapes; do
+  cmake -S "$S"/$v -B "$S"/$v/build -G Ninja >/dev/null && cmake --build "$S"/$v/build >/dev/null
+  echo "== $v"
+  "$S"/$v/build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir -opt 2>&1; echo "toyc-ch7 exit status: $?"
+done
+rm -rf "$S"
+echo "== real toyc-ch7, with locations"
+./build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir -opt -mlir-print-debuginfo 2>&1 | grep 'toy.constant'
+```
+
+Real output **[23]**:
+
+```text
+== no-access-folder
+loc("../../test_Example/Toy/Ch7/struct-codegen.toy":17:18): error: unable to infer shape of operation without shape inference interface
+toyc-ch7 exit status: 4
+== no-constant-shapes
+error: unable to infer shape of operation without shape inference interface
+toyc-ch7 exit status: 4
+== real toyc-ch7, with locations
+    %0 = toy.constant dense<[[1.000000e+00, 2.000000e+00, 3.000000e+00], [4.000000e+00, 5.000000e+00, 6.000000e+00]]> : tensor<2x3xf64> loc(unknown)
+```
+
+- **Without the access folder,** the struct ops survive the inliner's canonicalization and reach shape inference, which stops at the first op without the interface: line 17, column 18 is the `{` of the struct literal, i.e. the `toy.struct_constant`. The pass treats every result that is not a ranked tensor as unknown (`returnsDynamicShape` in `mlir/ShapeInferencePass.cpp`), a `!toy.struct` result included, and the struct ops implement no inference, so they must be gone by then; `StructAccessOp::fold` is what removes them (section 8.2).
+- **Without `toy.constant`'s shape inference,** the folder works, but the `toy.constant` that `materializeConstant` creates gets the access's result type, the unranked `tensor<*xf64>` (the transposes read `%0 : tensor<*xf64>` in section 8.1's `Inliner` dump). Shape inference then has to rank that constant, and Chapter 6's `toy.constant` never needed to: MLIRGen always gave it a ranked type. Hence `DeclareOpInterfaceMethods<ShapeInferenceOpInterface>` and `inferShapes()`, which sets the type from the attribute (section 6.1).
+- **The error has no location** because the failing op is the folder's constant: the real binary shows it with `loc(unknown)`, while the ops MLIRGen creates from the program carry their source locations.
+
+**A type that is meant to fold away makes folding part of correctness: every op the folder creates must satisfy the passes that run after it.**
+
+### 10.7 Step 7: check the remaining one-line changes
+
+Two changes are left: a canonicalizer before shape inference in `toyc.cpp` (section 8), and the stock `cf::populateAssertToLLVMConversionPattern` in `mlir/LowerToLLVM.cpp`, which lowers `cf.assert`. A scratch copy without both runs every Chapter 7 test input at four levels and compares the output with the real binary's:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch7
+S=$(mktemp -d)
+cp -R CMakeLists.txt include mlir parser toyc.cpp "$S"/
+sed -i '' '/^    optPM.addPass(mlir::createCanonicalizerPass());$/{N;s/^.*\n\(.*createShapeInferencePass.*\)$/\1/;}' "$S"/toyc.cpp
+sed -i '' '/populateAssertToLLVMConversionPattern/d' "$S"/mlir/LowerToLLVM.cpp
+diff toyc.cpp "$S"/toyc.cpp; diff mlir/LowerToLLVM.cpp "$S"/mlir/LowerToLLVM.cpp
+cmake -S "$S" -B "$S"/build -G Ninja >/dev/null && cmake --build "$S"/build >/dev/null
+n=0
+for f in ../../test_Example/Toy/Ch7/*.toy ../../test_Example/Toy/Ch7/*.mlir; do
+  for e in "-emit=mlir -opt" -emit=mlir-affine -emit=llvm -emit=jit; do
+    n=$((n + 1))
+    cmp -s <(./build/toyc-ch7 $f $e 2>&1) <("$S"/build/toyc-ch7 $f $e 2>&1) || echo "differs: $f $e"
+  done
+done
+echo "$n runs compared"
+rm -rf "$S"
+```
+
+Real output **[24]**:
+
+```text
+166d165
+<     optPM.addPass(mlir::createCanonicalizerPass());
+224d223
+<   cf::populateAssertToLLVMConversionPattern(typeConverter, patterns);
+56 runs compared
+```
+
+- The two `diff`s show that the scratch copy lacks exactly these two lines.
+- No run prints `differs`: on the 14 test inputs, at `-emit=mlir -opt`, `mlir-affine`, `llvm` and `jit`, the output is the same with and without them. The inliner already canonicalizes `main` before shape inference (section 8.1), and no Toy lowering creates `cf.assert`. Neither line is needed to derive the chapter; both are harmless.
+
+---
+
+## 11. Key Takeaways & Pitfalls
 
 **Takeaways**
 
@@ -1950,6 +2282,7 @@ Real output **[17]** (`transpose(a) * transpose(a)` for `a = [[1, 2, 3], [4, 5, 
 5. **Bridge C++ types into ODS with `DialectType` + `CPred`,** then compose constraints (`AnyTypeOf<[F64Tensor, Toy_StructType]>`) and thread them through existing ops.
 6. **`ConstantLike` + `hasFolder` + `materializeConstant` is the constant-propagation triad.** Fold hooks compute attribute results; the dialect materializer decides which op re-embodies an attribute of a given type.
 7. **Design types to disappear.** No lowering was written for `StructType`; inlining plus folding erases it before the lowering pipeline runs. High-level abstractions that fold away are often cheaper than ones you must lower.
+8. **Derive a hand-written type from the generated one** (section 10): declare it as a `TypeDef` and let `mlir-tblgen` print the storage class it needs, take the ODS hooks from stock `.td` files, and let the old parser and the pass pipeline name each remaining change. A type that must fold away makes every op the folder creates subject to the passes that run after it.
 
 **Pitfalls**
 
@@ -1977,7 +2310,7 @@ cd /Users/roy/study/mlir/toy/Ch7
 
 The dump has eight parts. The first three are `Canonicalizer` dumps from *inside* the inliner, which canonicalizes each callable it visits (section 8.1): `multiply_transpose` and `main` as they are in section 7.4, then `main` after `multiply_transpose` was inlined into it. That third dump is already identical to the body of the `Inliner` dump that follows. The excerpt starts there.
 
-Real output **[18]** (abridged: it starts at the `Inliner` dump):
+Real output **[25]** (abridged: it starts at the `Inliner` dump):
 
 ```mlir
 // -----// IR Dump After Inliner (inline) //----- //
@@ -2043,7 +2376,7 @@ cd /Users/roy/study/mlir/toy/Ch7
 ./build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-opt.mlir -emit=mlir -opt 2>&1
 ```
 
-Real output **[19]**:
+Real output **[26]**:
 
 ```mlir
 module {
@@ -2065,7 +2398,7 @@ printf 'struct Inner {\n  var a;\n}\n\nstruct Outer {\n  Inner i;\n  var b;\n}\n
   | ./build/toyc-ch7 -emit=mlir 2>&1
 ```
 
-Real output **[20]**:
+Real output **[27]**:
 
 ```mlir
 module {
@@ -2091,7 +2424,7 @@ printf 'struct S {\n  var a;\n  var b;\n}\n\ndef main() {\n  S s = {[1, 2]};\n  
   | ./build/toyc-ch7 -emit=mlir 2>&1
 ```
 
-Real output **[21]** (exit status 1):
+Real output **[28]** (exit status 1):
 
 ```text
 loc("-":7:3): error: struct type of initializer is different than the variable declaration. Got '!toy.struct<tensor<*xf64>>', but expected '!toy.struct<tensor<*xf64>, tensor<*xf64>>'
@@ -2104,7 +2437,7 @@ cd /Users/roy/study/mlir/toy/Ch7
 printf 'struct S {\n  var a<2>;\n}\n' | ./build/toyc-ch7 -emit=mlir 2>&1
 ```
 
-Real output **[22]** (exit status 1):
+Real output **[29]** (exit status 1):
 
 ```text
 loc("-":2:3): error: error: variables within a struct definition must not have initializers
@@ -2118,7 +2451,7 @@ printf 'struct S {\n  var a;\n}\n\ndef main() {\n  S s = {[1, 2]};\n  print(s.b)
   | ./build/toyc-ch7 -emit=mlir 2>&1
 ```
 
-Real output **[23]** (exit status 0):
+Real output **[30]** (exit status 0):
 
 ```text
 loc("-":7:11): error: invalid access into struct expression
@@ -2146,7 +2479,7 @@ cd /Users/roy/study/mlir/toy/Ch7
   | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
 ```
 
-Real output **[24]**:
+Real output **[31]**:
 
 ```mlir
 module {
@@ -2166,6 +2499,7 @@ module {
     "toy.return"() : () -> ()
   }) : () -> ()
 }
+
 ```
 
 It round-trips — but for a different reason than the ops do. Generic *op* form is dialect-free structure, whereas `!toy.struct<tensor<*xf64>, tensor<*xf64>>` is still Toy's custom syntax; under `-allow-unregistered-dialect` MLIR parses it as an **opaque type** — the body between `<...>` is kept as an uninterpreted string and printed back verbatim. Everything this chapter implemented for the type is inert in that tool: no `parseType` structural validation (the diagnostic of section 5.2), no `StructType::getElementTypes()`, no verifier checking that `struct_access`'s index is in bounds, and of course no folding. The type has become a label rather than a semantic object — which is exactly the boundary between *carrying* IR and *understanding* it. Any tool that must reason about `!toy.struct` (verify it, fold it, lower it) has to link the dialect; a tool that merely transports IR does not. That division of labor is why MLIR text files are a viable interchange format between tools that know different subsets of the dialects involved.
@@ -2238,14 +2572,14 @@ cd /Users/roy/study/mlir/toy/Ch7
 ./examples.sh -l
 ```
 
-Real output **[25]** (abridged):
+Real output **[32]** (abridged):
 
 ```text
 [ 1] 2.5   ./build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-ast.toy -emit=ast 2>&1 | sed -n '/VarDecl value/,/16:18/p'
 [ 2] 3.2   S=$(mktemp -d)
 ...
-[24] C     ./build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir -mlir-print-op-generic 2>&1 \
-[25] E     ./examples.sh -l
+[31] C     ./build/toyc-ch7 ../../test_Example/Toy/Ch7/struct-codegen.toy -emit=mlir -mlir-print-op-generic 2>&1 \
+[32] E     ./examples.sh -l
 ```
 
 The script reads the commands from `README.md` on every run. A command is every `bash` code block in file order, except the build block (its first command after `cd` is `cmake`) and file excerpts (a `***path***` label above the fence). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". So adding, removing or reordering a command block renumbers the ones after it, and their **[N]** labels must be updated to match.
