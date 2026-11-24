@@ -89,7 +89,7 @@ Things to notice:
 Type checking in Toy is done statically through **type inference**: the language barely requires type declarations. Functions are **generic over shapes** — a function's parameters are *unranked* (we know the values are tensors, but not their dimensions). Concrete shapes are only pinned down when the function is called; conceptually, the compiler **specializes** a function for each distinct set of argument shapes it is called with. This repo's test file `ast.toy` shows it (abridged: the `# CHECK:` lines after the program are elided):
 
 ***test_Example/Toy/Ch1/ast.toy***
-```text
+```python
 # RUN: toyc-ch1 %s -emit=ast 2>&1 | FileCheck %s
 
 # User defined generic function that operates on unknown shaped arguments.
@@ -145,7 +145,7 @@ The second test input, `test_Example/Toy/Ch1/empty.toy`, is a negative test — 
 
 ## 3. Build and Run
 
-The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 1 on its own, from the chapter directory.
+The superbuild (`toy/build.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 1 on its own, from the chapter directory.
 
 Every command in this README is numbered by its output (**[1]**–**[12]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix B).
 
@@ -532,6 +532,10 @@ void dump(ModuleAST &);
 - `FunctionAST` = prototype + body (an `ExprASTList`, i.e. a block).
 - `ModuleAST` = the whole translation unit, a list of functions, iterable via `begin()`/`end()`.
 
+**Why a module is only a vector of functions.** A Toy source file can contain nothing but function definitions: the grammar's first rule is `module ::= definition*` (section 4.3). There are no global variables, no imports, no top-level statements and no type declarations, and everything else (`var`, `return`, expressions) lives inside a function body, where the `FunctionAST` already owns it through its `ExprASTList`. So a list of functions is the whole program.
+
+The vector holds `FunctionAST` by value, while expressions are held as `std::unique_ptr<ExprAST>`, and the difference is polymorphism. An `ExprAST` pointer may hold a `NumberExprAST`, a `BinaryExprAST` or any other subclass, so it needs the indirection. `FunctionAST` has no base class and no subclasses, so the vector can only ever hold one type, and with two `unique_ptr` members it is cheap to move, which is how the parser fills the vector (`functions.push_back(std::move(*f))`). Chapter 7 shows the rule from the other side: once struct definitions become a second kind of top-level item, `FunctionAST` and the new `StructAST` both derive from a `RecordAST` base, and the member turns into `std::vector<std::unique_ptr<RecordAST>> records`. **The container follows the language: by value while there is one kind of thing to hold, by pointer as soon as there are two.**
+
 ### 4.3 Recursive Descent Parsing
 
 The `Parser` holds a reference to the lexer and exposes a single public method, `parseModule`. Its class comment is worth reading because it states the chapter's scope precisely:
@@ -804,6 +808,8 @@ std::unique_ptr<R> parseError(T &&expected, U &&context = "") {
 ### 4.4 The AST Dumper
 
 This file implements the `toy::dump(ModuleAST&)` declared in `AST.h`. It is a straightforward tree walk with pretty indentation, and it introduces two idioms you will keep seeing in MLIR code.
+
+**Why the dumper is the only `.cpp` under `parser/`.** The lexer and parser stay in their headers because nothing is gained by splitting them: only `toyc.cpp` includes `Lexer.h` and `Parser.h`, so each is compiled once, and their classes are the interface the driver uses. The dumper is the opposite case. Its `ASTDumper` class and `Indent` guard sit in an anonymous namespace in `parser/AST.cpp`, invisible to every other file, and the only thing `AST.h` exposes is the one-line declaration `void dump(ModuleAST &);`. A source file is where code goes when the rest of the program needs to call it but not to see it.
 
 **Idiom 1: RAII indentation.** (RAII: *resource acquisition is initialization*.) The current indent level is a plain `int` on the `ASTDumper`; a tiny guard bumps it on entry to a node and restores it on scope exit:
 

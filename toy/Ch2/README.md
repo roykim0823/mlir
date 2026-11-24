@@ -18,7 +18,7 @@ Why bother? Unlike LLVM IR's fixed, low-level instruction set, MLIR lets us defi
 
 The lexer, parser, and AST (`Lexer.h`, `Parser.h`, `AST.h`, `parser/AST.cpp`) are carried over unchanged from Chapter 1. Everything new is introduced in the section that explains it: the ODS definitions in `include/toy/Ops.td` (sections 3–4), the dialect implementation in `mlir/Dialect.cpp` (sections 3–4), the emitter in `mlir/MLIRGen.cpp` and the extended driver (section 5).
 
-Sections 1–8 follow the chapter's essential path; section 7 shows how to derive the chapter's new code yourself, from the AST classes to the builder calls and the build rules. The appendices hold the reference material: the other eight ops (A), `Ops.td` as a whole, its generated code, and the hand-written `Dialect.cpp` (B), printing details and stock `mlir-opt` (C), more inputs (D), the build wiring (E), and the script that runs every command in this README (F).
+Sections 1–8 follow the chapter's essential path; section 7 shows how to derive the chapter's new code yourself, from the AST classes to the builder calls and the build rules. The appendices hold the reference material: the other eight ops (A), `Ops.td` as a whole, its generated code, and the hand-written `Dialect.cpp` (B), printing details and stock `mlir-opt` (C), more inputs (D), the build wiring (E), and the script that runs every command in this README (F). Appendix G is a separate file: it explains `OpBase.td` and the nine files it includes.
 
 ---
 
@@ -164,17 +164,88 @@ Note that `%tensor`/`%t_tensor` came back as `%arg0`/`%0` — the value names we
 
 #### Invalid IR: accepted when unregistered, rejected when registered
 
-The previous runs showed that MLIR can *carry* an op it doesn't know. This part shows the cost: if MLIR doesn't know an op, it can't *check* it either. The **same** invalid IR passes when `toy` is unregistered and fails when `toy` is registered. Only registration changes between the two runs, so the error has to come from the dialect.
+The previous runs showed that MLIR can *carry* an op it doesn't know. This part shows the cost: if MLIR doesn't know an op, it can't *check* it either. The experiment gives the **same input, byte for byte,** to two tools: stock `mlir-opt`, which doesn't have the `toy` dialect, and `toyc-ch2`, which does. The first accepts it and the second rejects it. The input is the same, so the error has to come from the dialect.
 
-It takes three runs, because the first one fails for an unrelated reason:
-
-| Run | Tool | Input | Outcome | What it shows |
+| Run | Purpose | Tool | Input | Outcome |
 |---|---|---|---|---|
-| 1 | stock `mlir-opt` + flag | `invalid.mlir` as is | parse error | a detour: stock `mlir-opt` can't even *read* the file, so it never gets to check it |
-| 2 | stock `mlir-opt` + flag | `toy.func` → `func.func` | **accepted** | toy unregistered: the invalid `toy.print` passes |
-| 3 | `toyc-ch2` | `invalid.mlir` as is | **verifier error** | toy registered: the same `toy.print` is rejected |
+| 1 | `toy` **unregistered** | stock `mlir-opt` + flag | the IR below, on stdin | **accepted** |
+| 2 | `toy` **registered** | `toyc-ch2` | the same IR, on stdin | **verifier error** |
+| 3 | the repo's negative test | `toyc-ch2` | `invalid.mlir` | the same verifier error |
 
-The input is this repo's negative test. Its IR is *invalid* for Toy: it breaks three rules of `toy.print`:
+Runs 1 and 2 are the experiment. Run 3 repeats run 2 on the repo's test file, which holds the same IR in a different spelling.
+
+The input is a `toy.func` named `main` whose body is a single `toy.print`:
+
+```mlir
+"toy.func"() ({
+  %0 = "toy.print"() : () -> tensor<2x3xf64>
+}) {function_type = () -> (), sym_name = "main"} : () -> ()
+```
+
+Both ops are in the **generic** form, the only form a tool without the `toy` dialect can read ("What the flag does" above; appendix C.2 shows the custom form failing in stock `mlir-opt`). In this form a function is an op with no operands and no results, its body is a region (`({ ... })`), and its name and signature are the attributes `sym_name` and `function_type` (appendix C.1).
+
+The IR is *invalid* for Toy. It breaks three rules, all on line 2:
+
+1. **Missing terminator.** A function body must end with a terminator op (`toy.return`). Here the last op is `toy.print`, which is not one.
+2. **No operand.** `toy.print` should take one tensor operand.
+3. **One result.** `toy.print` should not return a value.
+
+**Run 1: toy unregistered, the invalid IR passes.** Stock `mlir-opt` parses the input, runs the verifier, and reports nothing:
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+mlir-opt -allow-unregistered-dialect <<'EOF'
+"toy.func"() ({
+  %0 = "toy.print"() : () -> tensor<2x3xf64>
+}) {function_type = () -> (), sym_name = "main"} : () -> ()
+EOF
+```
+
+Real output **[4]** (exit status 0 — no verifier error):
+
+```mlir
+module {
+  "toy.func"() ({
+    %0 = "toy.print"() : () -> tensor<2x3xf64>
+  }) {function_type = () -> (), sym_name = "main"} : () -> ()
+}
+```
+
+`mlir-opt` verifies the module after parsing, and exit status 0 means verification passed. All three problems are still there. MLIR misses them because, for an unregistered op, it knows only the name. It doesn't know the op's operand count, result count, types or traits (the "opaque" paragraph above). So each check gives the op the benefit of the doubt:
+
+1. **Missing terminator.** The verifier finds a terminator by the op's `IsTerminator` trait, and an unregistered op has no traits it can look up. For all MLIR knows, `toy.print` *could* be a terminator, so it lets this pass.
+2. **No operand.** MLIR doesn't know how many operands `toy.print` takes, so zero is as good as any other count.
+3. **One result.** MLIR doesn't know how many results it has, so `%0` is accepted.
+
+The only checks left are structural ones, which hold for every op (e.g. each operand is defined before use), and this IR passes them. The output is the same IR printed back, wrapped in the implicit top-level `module`.
+
+**Run 2: toy registered, the same IR is rejected.** `toyc-ch2` registers the `toy` dialect, so it has the definitions of `toy.func` and `toy.print`. The heredoc is the same as in run 1 (`-x mlir` tells the driver that stdin holds MLIR, not Toy source):
+
+```bash
+cd /Users/roy/study/mlir/toy/Ch2
+./build/toyc-ch2 - -x mlir -emit=mlir <<'EOF'
+"toy.func"() ({
+  %0 = "toy.print"() : () -> tensor<2x3xf64>
+}) {function_type = () -> (), sym_name = "main"} : () -> ()
+EOF
+```
+
+Real output **[5]** (exit status 3):
+
+```text
+loc("<stdin>":2:8): error: 'toy.print' op requires zero results
+Error can't load file -
+```
+
+`toyc-ch2` loads the input with `mlir::parseSourceFile`, which parses and then verifies. The verifier now has `toy.print`'s ODS definition (appendix A.5): zero results, one `F64Tensor` operand. It rejects the op that run 1 accepted:
+
+- `error: 'toy.print' op requires zero results` is problem 3. The location `<stdin>:2:8` points at `"toy.print"` on line 2.
+- Verification stops at the first failure an op reports, so problems 1 and 2 are not reported in this run. Fixing problem 3 would let the verifier reach the next one.
+- When verification fails, `parseSourceFile` returns no module. The driver then prints `Error can't load file ...` and exits with status 3 (`toyc.cpp`).
+
+Compare the two runs: the input is identical, but run 1 exits 0 and run 2 exits 3. **An op's rules live in its dialect, so IR can only be checked by a tool that has the dialect registered.**
+
+**Run 3: the repo's negative test.** The repo keeps this case as a test file. Its IR is the one above, except that the function is written in Toy's **custom** form (`toy.func @main() { ... }`: bare op name, `@symbol`, no quotes), which `toyc-ch2` can read because it has toy's parser. The invalid `"toy.print"` line is the same:
 
 ***test_Example/Toy/Ch2/invalid.mlir***
 ```mlir
@@ -189,54 +260,6 @@ toy.func @main() {
 }
 ```
 
-The file mixes two syntaxes. Line 7, `toy.func @main() {`, is in Toy's **custom** form: bare op name, `@symbol`, no quotes. Line 8, `"toy.print"() : () -> ...`, is in the **generic** form, which is self-describing ("What the flag does" above). Its three violations are all on line 8.
-
-**Run 1: stock `mlir-opt` on the file as is.** Feed the file to stock `mlir-opt`. It doesn't get past line 7, even with the flag:
-
-```bash
-cd /Users/roy/study/mlir/toy/Ch2
-/opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect ../../test_Example/Toy/Ch2/invalid.mlir
-```
-
-Real output **[4]** (exit status 1; the dialect list is abridged):
-
-```text
-../../test_Example/Toy/Ch2/invalid.mlir:7:1: error: Dialect `toy' not found for custom op 'toy.func' 
-toy.func @main() {
-^
-../../test_Example/Toy/Ch2/invalid.mlir:7:1: note: Registered dialects: acc, affine, amdgpu, amx, arith, ... ; for more info on dialect registration see https://mlir.llvm.org/getting_started/Faq/#registered-loaded-dependent-whats-up-with-dialects-management
-```
-
-This is a **parse** error, not a verification error, and it says nothing about `toy.print`. Recall the two requirements above: the parser must understand the syntax, and it must be allowed to create the op. The flag covers only the second. A custom-form op can be read only by its dialect's own parser (appendix C.2), and stock `mlir-opt` doesn't have the toy dialect, so parsing stops at line 7. Line 8 is never reached. The IR isn't checked for validity at all, so this run can't prove anything about the claim.
-
-**Run 2: toy unregistered, the invalid op passes.** To get past line 7, the `sed` replaces `toy.func` with the builtin `func.func`, which stock `mlir-opt` can parse. Its custom syntax `func.func @main() { ... }` is the same. Line 8 stays as it was: the invalid generic-form `"toy.print"`. Now parsing succeeds, the verifier runs, and it reports nothing:
-
-```bash
-cd /Users/roy/study/mlir/toy/Ch2
-sed 's/toy\.func/func.func/' ../../test_Example/Toy/Ch2/invalid.mlir \
-  | /opt/homebrew/opt/llvm@20/bin/mlir-opt -allow-unregistered-dialect
-```
-
-Real output **[5]** (exit status 0 — no verifier error):
-
-```mlir
-module {
-  func.func @main() {
-    %0 = "toy.print"() : () -> tensor<2x3xf64>
-  }
-}
-```
-
-`mlir-opt` verifies the module after parsing, and exit status 0 means verification passed. All three problems in line 8 are still there. MLIR misses them because, for an unregistered op, it knows only the name `toy.print`. It doesn't know the op's operand count, result count, types or traits (the "opaque" paragraph above). So each check gives the op the benefit of the doubt:
-
-1. **Missing terminator.** A `func.func` body must end with a terminator op (normally `func.return`). Here the last op is `toy.print`, which is not one. The verifier finds a terminator by the op's `IsTerminator` trait, and an unregistered op has no traits it can look up. For all MLIR knows, `toy.print` *could* be a terminator, so it lets this pass.
-2. **No operand.** `toy.print` should take one tensor operand. MLIR doesn't know how many operands it takes, so zero is as good as any other count.
-3. **One result.** `toy.print` shouldn't return a value. MLIR doesn't know how many results it has, so `%0` is accepted.
-
-The only checks left are structural ones, which hold for every op (e.g. each operand is defined before use), and this IR passes them. The output is the same IR printed back.
-
-**Run 3: toy registered, the same op is rejected.** `toyc-ch2` registers the `toy` dialect, so it has toy's parser *and* `toy.print`'s definition. No `sed` is needed: give it the unmodified file, `toy.func` included:
-
 ```bash
 cd /Users/roy/study/mlir/toy/Ch2
 ./build/toyc-ch2 ../../test_Example/Toy/Ch2/invalid.mlir -emit=mlir
@@ -249,13 +272,7 @@ loc("../../test_Example/Toy/Ch2/invalid.mlir":8:8): error: 'toy.print' op requir
 Error can't load file ../../test_Example/Toy/Ch2/invalid.mlir
 ```
 
-This time line 7 parses, because toy's parser reads `toy.func`. `toyc-ch2` loads the file with `mlir::parseSourceFile`, which parses and then verifies. The verifier now has `toy.print`'s ODS definition (appendix A.5): zero results, one `F64Tensor` operand. It rejects the op where run 2 accepted it:
-
-- `error: 'toy.print' op requires zero results` is problem 3. The location `invalid.mlir:8:8` points at `"toy.print"` on line 8.
-- Verification stops at the first failure an op reports, so problems 1 and 2 are not reported in this run. Fixing problem 3 would let the verifier reach the next one.
-- When verification fails, `parseSourceFile` returns no module. The driver then prints `Error can't load file ...` and exits with status 3 (`toyc.cpp`). The RUN line's `not toyc-ch2` expects this non-zero exit.
-
-Compare runs 2 and 3: the `toy.print` line is identical, but run 2 exits 0 and run 3 exits 3. The only thing that changed is whether the tool knows the `toy` dialect.
+It is the same error as in run 2, now at line 8 of the file. The RUN line's `not toyc-ch2` expects this non-zero exit.
 
 **Registering** the dialect and its operations is what makes the difference: the verifier learns each op's invariants, and you get typed accessor methods instead of stringly-typed attribute lookups, a custom (pretty) assembly syntax, and hooks for optimization. That is what the rest of this chapter builds.
 
@@ -289,7 +306,7 @@ public:
 
 ### 3.2 What this repo actually does: ODS
 
-MLIR also supports defining dialects — and their operations — *declaratively* in TableGen. That is much cleaner: it removes most of the boilerplate and lets documentation live right next to the definition. This repo defines the dialect and all nine ops in one file, `include/toy/Ops.td`, the heart of this chapter; section 4.3 explains how that file is written. The dialect is its first record:
+MLIR also supports defining dialects — and their operations — *declaratively* in TableGen, through ODS (Operation Definition Specification). That is much cleaner: it removes most of the boilerplate and lets documentation live right next to the definition. This repo defines the dialect and all nine ops in one file, `include/toy/Ops.td`, the heart of this chapter; section 4.3 explains how that file is written. The dialect is its first record:
 
 ***include/toy/Ops.td***
 ```tablegen
@@ -310,7 +327,16 @@ The `Dialect` record has more fields than the two used here:
 | `description` | A longer description, used in generated docs | not set |
 | `cppNamespace` | The C++ namespace the generated class lives in | `"::mlir::toy"` — hence `mlir::toy::ToyDialect` everywhere in this repo's C++ |
 
-`mlir-tblgen -gen-dialect-decls` turns this record into exactly the boilerplate class of section 3.1:
+ODS generates C++ from this record in two parts, each with its own `mlir-tblgen` flag, split the way hand-written C++ is split between a header and a source file:
+
+| Flag | Generates | Goes into | Included by |
+|---|---|---|---|
+| `-gen-dialect-decls` | the **declaration**: the `ToyDialect` class | `Dialect.h.inc` | the header `Dialect.h` |
+| `-gen-dialect-defs` | the **definitions**: the bodies of its constructor and destructor | `Dialect.cpp.inc` | the source file `Dialect.cpp` |
+
+Section 3.3 shows the two `#include`s. Operations follow the same split (`-gen-op-decls` and `-gen-op-defs`, section 4.4).
+
+**The declaration.** `-gen-dialect-decls` turns the record into exactly the boilerplate class of section 3.1:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch2
@@ -339,7 +365,7 @@ public:
 MLIR_DECLARE_EXPLICIT_TYPE_ID(::mlir::toy::ToyDialect)
 ```
 
-`-gen-dialect-defs` produces the constructor and destructor (the odd whitespace is verbatim generator output):
+**The definitions.** `-gen-dialect-defs` produces the constructor and destructor that the class above only declares (the odd whitespace is verbatim generator output):
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch2
@@ -513,7 +539,13 @@ Now that we have an op, we want to access and transform it. MLIR has two main cl
 - `mlir::Operation` models *all* operations generically. It is **opaque**: it describes no particular operation, but provides a general API into any operation instance (`getOperands()`, `getAttrs()`, `getLoc()`, …).
 - Each specific kind of operation is an `mlir::Op`-derived class (e.g. our `ConstantOp`, "zero inputs, one output, always the same value"). It is a thin **smart-pointer wrapper around an `Operation*`** that adds operation-specific accessors and type-safe properties.
 
-So defining a Toy op means defining a clean, semantically useful *interface* for building and inspecting an `Operation`. That is why `ConstantOp` declares **no data fields**: all of its data lives in the referenced `Operation`. A consequence is that `Op` classes are always passed **by value**, not by reference or pointer — a common MLIR idiom that applies equally to attributes, types, etc.
+So defining a Toy op means defining a clean, semantically useful *interface* for building and inspecting an `Operation`. That is why `ConstantOp` declares **no data fields**: all of its data lives in the referenced `Operation`. A consequence is that `Op` classes are always passed **by value**, not by reference or pointer, for three reasons:
+
+- **A copy costs the same as a pointer.** The only thing a `ConstantOp` object holds is the `Operation*`, so copying it copies one pointer.
+- **A copy is the same op.** The copy holds the same `Operation*`, so both objects refer to one operation in the IR. Changing the operation through the copy changes it for the original too; nothing is duplicated.
+- **There is no stored object to point at.** The IR stores `Operation`s, not `ConstantOp`s. A `ConstantOp` is made on the spot whenever one is needed (the `dyn_cast` below returns a new one). A `ConstantOp*` or `ConstantOp&` would be a pointer to a pointer, and it would refer to that temporary wrapper, which can go out of scope while the operation itself is still alive.
+
+This is a common MLIR idiom: attributes and types are also one-pointer wrappers passed by value.
 
 Given a generic `Operation*`, you get the specific `Op` back with LLVM's casting infrastructure:
 
@@ -570,7 +602,7 @@ Section 4.4 builds `ConstantOp` on this base class one field at a time (appendix
 
 ### 4.4 `ConstantOp` step by step
 
-Each step defines `ConstantOp` with a few more fields than the last and runs the result through `mlir-tblgen` to show what the new fields generate. Step *N*'s definition is the file `include/toy/Ops/OpsN.td`: standalone inputs for this walkthrough, one per stage, while the build compiles only `include/toy/Ops.td`. Each file holds the include, `Toy_Dialect` and `Toy_Op` it needs (shown in full in step 0, elided as `...` after that), plus the previous step's fields and the new ones, so `diff include/toy/Ops/Ops1.td include/toy/Ops/Ops2.td` shows exactly what step 2 adds.
+Each step defines `ConstantOp` with a few more fields than the last and runs the result through `mlir-tblgen` to show what the new fields generate. Step *N*'s definition is the file `include/toy/Ops/OpsN.td`: standalone inputs for this walkthrough, one per stage, while the build compiles only `include/toy/Ops.td`. Each file holds the include, `Toy_Dialect` and `Toy_Op` it needs (shown in full in step 0, elided as `...` after that), plus the previous step's fields and the new ones, so `diff include/toy/Ops/Ops1.td include/toy/Ops/Ops2.td` shows exactly what step 2 adds. From step 1 on, the excerpt shows only what that step adds or changes; the fields carried over from earlier steps are elided as `...`, and the finished record is shown in full at the end of this section.
 
 #### Step 0: The empty shell
 
@@ -592,7 +624,9 @@ def ConstantOp : Toy_Op<"constant"> {
 }
 ```
 
-`--print-records` shows the record after TableGen has resolved every class and template argument, before any backend runs:
+`--print-records` shows records after TableGen has resolved every class and template argument, before any backend runs. It prints **every** record TableGen knows after reading the file, not just ours. `Ops0.td` starts with `include "mlir/IR/OpBase.td"`, so the full output is 7567 lines: 295 classes, then 586 `def`s. Almost all of them come from `OpBase.td` and the files it includes (type and attribute constraints such as `AnyAttr`, traits such as `AffineScope`). Only two `def`s are from `Ops0.td`: `Toy_Dialect` and `ConstantOp`, and `ConstantOp` is the only operation among them. Appendix G explains those files.
+
+The `awk` filter keeps just that one record. `awk '/A/,/B/'` prints from the first line matching `A` through the next line matching `B`: here from the line starting with `def ConstantOp ` to the first line starting with `}`, the record's closing brace:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch2
@@ -809,13 +843,17 @@ def ConstantOp : Toy_Op<"constant"> {
 ```bash
 cd /Users/roy/study/mlir/toy/Ch2
 mlir-tblgen -gen-op-decls include/toy/Ops/Ops1.td -I /opt/homebrew/opt/llvm@20/include \
-  | awk '/^class ConstantOp : /,/^};/' | sed -n '1p;56,63p'
+  | awk '/^class ConstantOp : /,/^};/' | sed -n '1p;54,63p'
 ```
+
+The `sed` keeps the class line (line 1) and the members that step 1 adds for `value` (lines 54–63).
 
 Real output **[12]**:
 
 ```cpp
 class ConstantOp : public ::mlir::Op<ConstantOp, ::mlir::OpTrait::ZeroRegions, ::mlir::OpTrait::OneResult, ::mlir::OpTrait::OneTypedResult<::mlir::TensorType>::Impl, ::mlir::OpTrait::ZeroSuccessors, ::mlir::OpTrait::ZeroOperands, ::mlir::OpTrait::OpInvariants, ::mlir::BytecodeOpInterface::Trait> {
+  static ::llvm::LogicalResult readProperties(::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state);
+  void writeProperties(::mlir::DialectBytecodeWriter &writer);
   ::mlir::DenseElementsAttr getValueAttr() {
     return ::llvm::cast<::mlir::DenseElementsAttr>(getProperties().value);
   }
@@ -826,8 +864,8 @@ class ConstantOp : public ::mlir::Op<ConstantOp, ::mlir::OpTrait::ZeroRegions, :
   }
 ```
 
-- **The traits changed**: the shell's `ZeroResults` is now `OneResult` plus `OneTypedResult<TensorType>`, which section 4.1 had to write by hand. `OneTypedResult<TensorType>` adds typed accessors: `getResult()` and `getType()` return a `TensorType` value and type rather than a plain `Value`/`Type`. `ZeroOperands` stays, because the attribute is not an operand.
-- **`BytecodeOpInterface::Trait` is new**: the op now stores data in a property (`value`), and this interface writes and reads properties in MLIR's binary bytecode format (the `readProperties()`/`writeProperties()` methods the class declares; the `sed` cuts them, and the full class at the end of 4.4 shows them).
+- **The traits changed**: the shell's `ZeroResults` is now `OneResult` plus `OneTypedResult<TensorType>`, which section 4.1 had to write by hand. `OneTypedResult<TensorType>` adds typed accessors, `getResult()` and `getType()`, which return a `TensorType` value and type rather than a plain `Value`/`Type`. They are not in this output because ODS does not generate them: they are members of MLIR's trait class (`mlir/IR/OpDefinition.h`), and the op inherits them. ODS only chooses the trait, from `let results = (outs F64Tensor)`. `ZeroOperands` stays, because the attribute is not an operand.
+- **`BytecodeOpInterface::Trait` is new**: the op now stores data in a property (`value`), and this interface writes and reads properties in MLIR's binary bytecode format (the `readProperties()`/`writeProperties()` methods the class now declares).
 - **The accessors**, prefixed with `get`/`set`: `getValueAttr()` returns the attribute stored in the op's properties, and `setValueAttr()` replaces it. `getValue()` returns the attribute's *value*; for `F64ElementsAttr` that is the attribute itself.
 
 The definitions show what the two constraints turn into:
@@ -929,14 +967,7 @@ def ConstantOp : Toy_Op<"constant"> {
          { value = dense<[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]> : tensor<2x3xf64> }
         : () -> tensor<2x3xf64>
   }];
-
-  // The constant operation takes an attribute as the only input.
-  // `F64ElementsAttr` corresponds to a 64-bit floating-point ElementsAttr.
-  let arguments = (ins F64ElementsAttr:$value);
-
-  // The constant operation returns a single value of TensorType.
-  // F64Tensor corresponds to a 64-bit floating-point TensorType.
-  let results = (outs F64Tensor);
+  ...
 }
 ```
 
@@ -983,26 +1014,7 @@ Much like the named accessors, ODS generates most verification logic from the co
 ```tablegen
 ...
 def ConstantOp : Toy_Op<"constant"> {
-  // Provide a summary and description for this operation. This can be used to
-  // auto-generate documentation of the operations within our dialect.
-  let summary = "constant operation";
-  let description = [{
-    Constant operation turns a literal into an SSA value. The data is attached
-    to the operation as an attribute. For example:
-
-      %0 = "toy.constant"()
-         { value = dense<[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]> : tensor<2x3xf64> }
-        : () -> tensor<2x3xf64>
-  }];
-
-  // The constant operation takes an attribute as the only input.
-  // `F64ElementsAttr` corresponds to a 64-bit floating-point ElementsAttr.
-  let arguments = (ins F64ElementsAttr:$value);
-
-  // The constant operation returns a single value of TensorType.
-  // F64Tensor corresponds to a 64-bit floating-point TensorType.
-  let results = (outs F64Tensor);
-
+  ...
   // Add additional verification logic to the constant operation. Setting this bit
   // to `1` will generate a `::llvm::LogicalResult verify()` declaration on the
   // operation class that is called after ODS constructs have been verified, for
@@ -1130,33 +1142,7 @@ The last piece of the C++ version is its `build` methods — what `builder.creat
 ```tablegen
 ...
 def ConstantOp : Toy_Op<"constant"> {
-  // Provide a summary and description for this operation. This can be used to
-  // auto-generate documentation of the operations within our dialect.
-  let summary = "constant operation";
-  let description = [{
-    Constant operation turns a literal into an SSA value. The data is attached
-    to the operation as an attribute. For example:
-
-      %0 = "toy.constant"()
-         { value = dense<[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]> : tensor<2x3xf64> }
-        : () -> tensor<2x3xf64>
-  }];
-
-  // The constant operation takes an attribute as the only input.
-  // `F64ElementsAttr` corresponds to a 64-bit floating-point ElementsAttr.
-  let arguments = (ins F64ElementsAttr:$value);
-
-  // The constant operation returns a single value of TensorType.
-  // F64Tensor corresponds to a 64-bit floating-point TensorType.
-  let results = (outs F64Tensor);
-
-  // Add additional verification logic to the constant operation. Setting this bit
-  // to `1` will generate a `::llvm::LogicalResult verify()` declaration on the
-  // operation class that is called after ODS constructs have been verified, for
-  // example the types of arguments and results. We implement additional verification
-  // in the definition of this `verify` method in the C++ source file.
-  let hasVerifier = 1;
-
+  ...
   // Add custom build methods for the constant operation. These methods populate
   // the `state` that MLIR uses to create operations, i.e. these are used when
   // using `builder.create<ConstantOp>(...)`.
@@ -1194,6 +1180,36 @@ The class now has five `build` overloads: the first two are ours, the other thre
 
 - The first custom builder, `(ins "DenseElementsAttr":$value)`, has an **inline body** (the `[{ ... }]` blob) that calls an autogenerated `build` with the attribute's own type. Inside the blob, `$_builder` and `$_state` are placeholders for the builder and the state being filled.
 - The second, `(ins "double":$value)`, has **no body**: ODS only *declares* `ConstantOp::build(OpBuilder &, OperationState &, double)`.
+
+**What a builder without a body means, and where `Dialect.cpp` comes in.** "No body" means no body *in the `.td` file*. The entry `OpBuilder<(ins "double":$value)>` tells ODS one thing: this op has a `build` method that takes a `double`. It says nothing about what the method does, so ODS generates the declaration and stops. The method still needs a body, and the dialect author writes it by hand in `mlir/Dialect.cpp`. The two builders differ only in where their C++ lives:
+
+| Builder | Body written in | Who emits the definition |
+|---|---|---|
+| `(ins "DenseElementsAttr":$value)` | the `.td` file, as the `[{ ... }]` argument | ODS, in the generated `Ops.cpp.inc` |
+| `(ins "double":$value)` | `mlir/Dialect.cpp` | the dialect author |
+
+So one `build(double)` method is spread over three files, plus its caller:
+
+```text
+include/toy/Ops.td     OpBuilder<(ins "double":$value)>                     the request, no body
+        │  mlir-tblgen -gen-op-decls
+        ▼
+Ops.h.inc              static void build(OpBuilder &, OperationState &,     the declaration, generated
+                                         double value);
+        │  #include "toy/Dialect.h", which includes Ops.h.inc
+        ▼
+mlir/Dialect.cpp       void ConstantOp::build(OpBuilder &, OperationState &, the definition, hand-written
+                                              double value) { ... }
+        ▲  resolved by the linker
+        │
+mlir/MLIRGen.cpp       builder.create<ConstantOp>(loc, num.getValue())      the caller
+```
+
+- **`Ops.td` and `Dialect.cpp` are two halves of one method.** The `.td` entry fixes the signature; `Dialect.cpp` supplies the body. It is the same split as a C++ member function declared in a header and defined in a source file, except that the header is generated.
+- **The compiler keeps them in step.** `Dialect.cpp` includes `toy/Dialect.h`, which includes the generated class, so the hand-written definition is compiled against the generated declaration. If the parameter list in `Dialect.cpp` differs from the one in the `.td` entry, the definition matches no declaration and does not compile.
+- **The linker needs the hand-written half.** `builder.create<ConstantOp>(loc, 1.0)` calls `ConstantOp::build(builder, state, 1.0)`. With the declaration alone, that call compiles and then fails to link.
+
+The rest of this step shows each piece: the generated definitions (without the `double` one), how ODS decides to skip a body, and the definition in `Dialect.cpp`.
 
 The definitions confirm both. Four `build()` bodies are generated — the `double` one is missing:
 
@@ -1244,7 +1260,7 @@ void ConstantOp::build(::mlir::OpBuilder &, ::mlir::OperationState &odsState, ::
 - **Result-type range + attribute**: the same, with an assert that exactly one result type was passed.
 - **Generic**: asserts zero operands and one result type, then copies operands, attributes and types into the state. Because `value` is a property, any attributes passed as a dictionary are converted into properties at the end (`setOpPropertiesFromAttribute`).
 
-**Why the `double` builder has no body.** ODS writes a builder body only when it is given one. `OpBuilder` is a TableGen class in `OpBase.td` with two template arguments: the parameter dag `p` and a `code` body `b`, which defaults to the empty string. An empty body is the documented signal to generate *only* the declaration. The second command below shows how each of our two `OpBuilder<...>` entries became an anonymous record in the `builders` list:
+**How ODS decides to skip the body.** ODS writes a builder body only when it is given one. `OpBuilder` is a TableGen class in `OpBase.td` with two template arguments: the parameter dag `p` and a `code` body `b`, which defaults to the empty string. An empty body is the documented signal to generate *only* the declaration. The second command below shows how each of our two `OpBuilder<...>` entries became an anonymous record in the `builders` list:
 
 ```bash
 cd /Users/roy/study/mlir/toy/Ch2
@@ -1279,9 +1295,19 @@ def anonymous_345 {	// OpBuilder
 - **`anonymous_344`** is `OpBuilder<(ins "DenseElementsAttr":$value), [{ ... }]>`. Its `body` holds the code block, so `-gen-op-defs` wraps it in a function (the first `build` definition above).
 - **`anonymous_345`** is `OpBuilder<(ins "double":$value)>`. The second argument was omitted, so `body` is the default `""`. `-gen-op-decls` still emits the declaration from `dagParams` (the second `build` declaration above), and `-gen-op-defs` skips the definition.
 
-Why leave a body out at all? A builder body is only C++ pasted into the generated file, so either way works. The forwarding builder is one line, so it fits inline. The `double` builder has to build a tensor type and a dense attribute from a scalar. That code is easier to write, read and debug in a real `.cpp` file than in a `[{ ... }]` string inside TableGen. The cost is that someone must define it: with the declaration and no definition, any call to `ConstantOp::build(builder, state, 1.0)` (MLIRGen's `builder.create<ConstantOp>(loc(num.loc()), num.getValue())` for a number literal is one) fails at link time with an undefined symbol (appendix B.5 shows the error).
+**Why leave a body out at all?** It is a choice, not a limit of ODS. A builder body is only C++ pasted into the generated file, so either way works. The `double` builder could have been written inline too (not this repo's code):
 
-That definition is in the dialect:
+```tablegen
+OpBuilder<(ins "double":$value), [{
+  auto dataType = RankedTensorType::get({}, $_builder.getF64Type());
+  auto dataAttribute = DenseElementsAttr::get(dataType, value);
+  build($_builder, $_state, dataType, dataAttribute);
+}]>
+```
+
+The repo keeps it in C++ for readability. The forwarding builder is one line, so it fits inline. The `double` builder has to build a tensor type and a dense attribute from a scalar. That code is easier to write, read and debug in a real `.cpp` file, with a compiler and an editor that understand it, than in a `[{ ... }]` string that TableGen treats as opaque text. The cost is that someone must define it: with the declaration and no definition, any call to `ConstantOp::build(builder, state, 1.0)` (MLIRGen's `builder.create<ConstantOp>(loc(num.loc()), num.getValue())` for a number literal is one) fails at link time with an undefined symbol (appendix B.5 shows the error).
+
+That definition, the hand-written half, is in the dialect:
 
 ***mlir/Dialect.cpp***
 ```cpp
@@ -1310,47 +1336,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 // constant operation is marked as 'Pure' as it is a pure operation
 // and may be removed if dead.
 def ConstantOp : Toy_Op<"constant", [Pure]> {
-  // Provide a summary and description for this operation. This can be used to
-  // auto-generate documentation of the operations within our dialect.
-  let summary = "constant operation";
-  let description = [{
-    Constant operation turns a literal into an SSA value. The data is attached
-    to the operation as an attribute. For example:
-
-      %0 = "toy.constant"()
-         { value = dense<[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]> : tensor<2x3xf64> }
-        : () -> tensor<2x3xf64>
-  }];
-
-  // The constant operation takes an attribute as the only input.
-  // `F64ElementsAttr` corresponds to a 64-bit floating-point ElementsAttr.
-  let arguments = (ins F64ElementsAttr:$value);
-
-  // The constant operation returns a single value of TensorType.
-  // F64Tensor corresponds to a 64-bit floating-point TensorType.
-  let results = (outs F64Tensor);
-
-  // Add additional verification logic to the constant operation. Setting this bit
-  // to `1` will generate a `::llvm::LogicalResult verify()` declaration on the
-  // operation class that is called after ODS constructs have been verified, for
-  // example the types of arguments and results. We implement additional verification
-  // in the definition of this `verify` method in the C++ source file.
-  let hasVerifier = 1;
-
-  // Add custom build methods for the constant operation. These methods populate
-  // the `state` that MLIR uses to create operations, i.e. these are used when
-  // using `builder.create<ConstantOp>(...)`.
-  let builders = [
-    // Build a constant with a given constant tensor value.
-    OpBuilder<(ins "DenseElementsAttr":$value), [{
-      // Call into an autogenerated `build` method.
-      build($_builder, $_state, value.getType(), value);
-    }]>,
-
-    // Build a constant with a given constant floating-point value. This builder
-    // creates a declaration for `ConstantOp::build` with the given parameters.
-    OpBuilder<(ins "double":$value)>
-  ];
+  ...
 }
 ```
 
@@ -2729,7 +2715,7 @@ int main(int argc, char **argv) {
 
 ## 6. Build and Run
 
-The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 2 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — the TableGen wiring — is in appendix E.
+The superbuild (`toy/build.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 2 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — the TableGen wiring — is in appendix E.
 
 Every command in this README is numbered by its output (**[1]**–**[69]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 7` runs only command [7], and `./examples.sh -l` lists them (appendix F).
 
@@ -4431,6 +4417,14 @@ Real output **[69]** (abridged):
 ```
 
 The script doesn't keep its own copy of the commands: it reads them from `README.md` on every run. A command is every `bash` code block in file order, except the build block (its first command after `cd` is `cmake`) and file excerpts (a `***path***` label above the fence, like `run_mlir-tblgen.sh` in section 6.4). Number *N* is the *N*-th such block, and the README marks that block's output "Real output **[N]**". Adding, removing or reordering a command block therefore renumbers the ones after it.
+
+---
+
+## Appendix G: `OpBase.td` and the files it includes
+
+`include "mlir/IR/OpBase.td"`, the first line of `Ops.td`, brings in ten TableGen files: `OpBase.td` and the nine it includes, directly or through another file. They define `Dialect`, `Op`, `OpBuilder`, the traits and the type and attribute constraints that sections 3 and 4 use.
+
+This appendix is a separate file, [appendix/OpBase.md](appendix/OpBase.md). It shows how the ten files include each other, what each one defines, which of those names Toy's `Ops.td` uses, and how one name (`F64Tensor`) is built up through them. The ten files are copied to `appendix/OpBase/mlir/IR/` for reading; the build doesn't use the copies. Its commands are not numbered, because `examples.sh` reads this README only.
 
 ---
 

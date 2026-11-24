@@ -1822,7 +1822,7 @@ For more on custom types, [Defining Dialect Attributes and Types](https://mlir.l
 
 ## 9. Build and Run
 
-The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 7 on its own, from the chapter directory.
+The superbuild (`toy/build.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 7 on its own, from the chapter directory.
 
 Every command in this README is numbered by its output (**[1]**–**[32]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix E).
 

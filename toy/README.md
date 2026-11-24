@@ -53,8 +53,7 @@ mlir/                            # repo root
 │   ├── CMakeLists.txt           # superbuild: find_package(MLIR/LLVM) once, add_subdirectory(Ch1..Ch7)
 │   ├── CMakePresets.json        # pins Ninja, Release, Homebrew llvm@20 clang, MLIR_DIR/LLVM_DIR
 │   ├── build.sh                 # ./build.sh [ch1..ch7|all] [--fresh] — configure once, build incrementally
-│   ├── run.sh                   # ./run.sh <ch1..ch7|all> — a few demo commands per chapter (superbuild binaries)
-│   ├── examples.sh              # runs every command of a chapter README; invoked as ChN/examples.sh
+│   ├── examples.sh              # runs every command of a chapter README, command then output; invoked as ChN/examples.sh
 │   ├── CLAUDE.md                # conventions all chapter READMEs follow
 │   ├── build/                   # shared build tree (created by build.sh; binaries in build/bin/toyc-ch1..7)
 │   └── Ch1/ … Ch7/              # one directory per tutorial chapter:
@@ -93,8 +92,10 @@ cd toy
 ./build.sh ch3      # build only toyc-ch3 (incremental)
 ./build.sh --fresh  # wipe build/ and start over
 
-./run.sh ch1        # run a chapter's demo commands on the test inputs
-./run.sh all        # run every chapter in order
+cmake -S Ch1 -B Ch1/build -G Ninja && cmake --build Ch1/build   # standalone build, what the README commands run
+Ch1/examples.sh     # run every command of Ch1/README.md, each command before its output
+Ch1/examples.sh -l  # list them; Ch1/examples.sh 3 runs command [3] only
+for n in 1 2 3 4 5 6 7; do Ch$n/examples.sh; done              # every chapter in order
 ```
 
 `build.sh` is a thin wrapper around CMake presets — the equivalent raw
@@ -106,15 +107,14 @@ cmake --build --preset default       # build everything
 ninja -C build toyc-ch3              # or build a single chapter target
 ```
 
-`run.sh` holds each chapter's demo/test commands in one place and invokes the
-binaries from `build/bin/`. You can of course also run a binary directly:
+The superbuild's binaries land in `build/bin/`, and you can run one directly:
 
 ```bash
 ./build/bin/toyc-ch1 ../test_Example/Toy/Ch1/ast.toy -emit=ast
 ```
 
-To build one chapter standalone (e.g. to experiment without touching the
-rest, or to run its `examples.sh`), configure it directly:
+To build one chapter standalone (to experiment without touching the rest, and
+to run its `examples.sh`), configure it directly:
 
 ```bash
 cmake -S Ch3 -B Ch3/build -G Ninja
@@ -129,19 +129,22 @@ finds `llvm@20/lib/cmake/{mlir,llvm}` by itself. Without that environment,
 pass the locations explicitly:
 `-DMLIR_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/mlir -DLLVM_DIR=/opt/homebrew/opt/llvm@20/lib/cmake/llvm -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@20/bin/clang++`.
 
-### Two ways to run a chapter's commands
+### Running a chapter's commands
 
-- **`./run.sh chN`** runs a handful of demo commands for the chapter. It uses
-  the superbuild's `build/bin/toyc-chN` (falling back to a standalone
-  `ChN/build/toyc-chN`), so `./build.sh` is all it needs.
-- **`ChN/examples.sh`** runs *every* command shown in that chapter's README,
-  exactly as written, and prints each command with its output and exit status
-  (`ChN/examples.sh 7` runs only command [7], `ChN/examples.sh -l` lists them).
-  The README commands are written for the chapter directory and call
-  `./build/toyc-chN`, the **standalone** build below — so build the chapter
-  standalone first. `examples.sh` is one script in `toy/`; each
-  `ChN/examples.sh` is a symlink to it, and it reads the README next to the
-  symlink it is run through.
+`ChN/examples.sh` runs every command shown in that chapter's README, exactly
+as written, and prints each command with its output and exit status
+(`ChN/examples.sh 7` runs only command [7], `ChN/examples.sh -l` lists them).
+The README commands are written for the chapter directory and call
+`./build/toyc-chN`, the **standalone** build above, so build the chapter
+standalone first; the script says so if the binary is missing. Some commands
+fail on purpose (verifier errors, a missing dialect), so the script prints each
+exit status and keeps going. `examples.sh` is one script in `toy/`; each
+`ChN/examples.sh` is a symlink to it, and it reads the README next to the
+symlink it is run through. A shell loop runs every chapter in order:
+
+```bash
+for n in 1 2 3 4 5 6 7; do Ch$n/examples.sh; done
+```
 
 ## The build system
 
@@ -227,7 +230,7 @@ In the superbuild, `CMAKE_SOURCE_DIR` is `toy/` while `CMAKE_CURRENT_SOURCE_DIR`
 2. If `build/CMakeCache.txt` doesn't exist it configures with `cmake --preset default`; afterwards Ninja re-runs CMake automatically when any `CMakeLists.txt` changes.
 3. Builds `cmake --build --preset default` (all) or `--target toyc-chN` (one chapter).
 
-Artifacts land in `toy/build/`: the binaries you care about in `build/bin/toyc-ch1..7`, plus per-chapter object/TableGen output under `build/ChN/` (generated `.inc` files at `build/ChN/include/`). `run.sh` looks in `build/bin/` first and falls back to `ChN/build/` for standalone-built chapters.
+Artifacts land in `toy/build/`: the binaries you care about in `build/bin/toyc-ch1..7`, plus per-chapter object/TableGen output under `build/ChN/` (generated `.inc` files at `build/ChN/include/`).
 
 ### What each chapter adds to the build
 

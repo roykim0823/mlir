@@ -71,7 +71,7 @@ numbers (they shift); it cites sections.
 
 1. Overview, ending with one paragraph on what each appendix holds. No repo-layout
    table or file tree: the top-level README covers the repo layout, the superbuild
-   and `build.sh`/`run.sh`, and the chapter README doesn't repeat them
+   and `build.sh`, and the chapter README doesn't repeat them
 2. Concept and code sections, **in upstream's order**
 3. **Build and Run** — where upstream runs the complete example, normally its last
    section (upstream's "Complete Toy Example" / "running the tool" part maps here).
@@ -96,7 +96,9 @@ numbers (they shift); it cites sections.
   inputs, the build wiring ("What Chapter N adds to the build"), and `examples.sh`.
   The Overview says in one paragraph what each appendix holds. Ch2's layout: A other
   ops, B `Ops.td` and `Dialect.cpp` as a whole, C printing details and stock `mlir-opt`, D more
-  inputs, E build, F `examples.sh`.
+  inputs, E build, F `examples.sh`, G `OpBase.td` and the files it includes (a
+  separate file, `appendix/OpBase.md`, with copies of the `.td` files in
+  `appendix/OpBase/`; its commands are not numbered).
 - **The "Deriving ... yourself" section** (Ch2–Ch7; model: Ch6 section 5) is the
   last numbered section before Key Takeaways & Pitfalls, after Build and Run, and
   covers the chapter's new files and its major changes to existing ones. It is the
@@ -131,8 +133,10 @@ numbers (they shift); it cites sections.
   step 0, `Ops0.td`, is the empty shell and shows the full prelude), holding the includes, the dialect and
   base class records it needs, and that stage's definition; each contains the
   previous stage's fields plus the new ones, so `diff` between two files shows one
-  step. Show the file as a labeled excerpt (the shared prelude elided as `...` after
-  the first), then run `mlir-tblgen` on it; the output shows what that step's fields
+  step. Show the file as a labeled excerpt, then run `mlir-tblgen` on it. Step 0's
+  excerpt is the whole file; from step 1 on, the excerpt shows only what that step
+  adds or changes, with the shared prelude and the fields carried over from earlier
+  steps elided as `...`; the output shows what that step's fields
   generate. The build never reads these files.
   Steps beyond upstream are fine when the repo's file has the field (Ch2's step 5,
   `Pure`). A behavior with two outcomes gets both runs (e.g. a verifier: one input
@@ -158,9 +162,9 @@ and re-check each reference against its target heading afterwards.
 
 ## Build and Run section
 
-- Open with one line pointing to the top README for `build.sh`, `run.sh`, and
-  `CMakePresets.json`. Do **not** re-document `build.sh`/`run.sh` (no `./build.sh chN`
-  block, no run-script walkthrough, no pitfalls about `--fresh` or `run.sh` paths).
+- Open with one line pointing to the top README for `build.sh` and
+  `CMakePresets.json`. Do **not** re-document `build.sh` (no `./build.sh chN`
+  block, no pitfalls about `--fresh` or superbuild paths).
 - Subsection "Building": standalone build, run from the chapter directory:
   ```bash
   cd /Users/roy/study/mlir/toy/ChN

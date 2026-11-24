@@ -978,7 +978,7 @@ In the next chapter we will leave primitive data types behind and add a composit
 
 ## 4. Build and Run
 
-The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 6 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — the ExecutionEngine guard and the shared-only link line — is in appendix C.
+The superbuild (`toy/build.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 6 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — the ExecutionEngine guard and the shared-only link line — is in appendix C.
 
 Every command in this README is numbered by its output (**[1]**–**[33]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix D).
 
@@ -1001,7 +1001,7 @@ The chapter targets are only defined when the installed MLIR was built with the 
 
 ### 4.2 Running
 
-**The input.** A 2×2 constant, printed — the same program that `run.sh ch6` and section 3.2 pipe in on stdin.
+**The input.** A 2×2 constant, printed — the same program that section 3.2 pipes in on stdin.
 
 ***test_Example/Toy/Ch6/jit.toy***
 ```text
@@ -1013,7 +1013,7 @@ def main() {
 }
 ```
 
-- `../../test_Example/Toy/Ch6/jit.toy` — the input program (above). Omitting it (or passing `-`) reads from stdin, which is how `run.sh` feeds its inline program.
+- `../../test_Example/Toy/Ch6/jit.toy` — the input program (above). Omitting it (or passing `-`) reads from stdin, as section 3.2 does.
 - `-emit=<action>` — how far down the pipeline to go. This chapter adds three actions to Chapter 5's `ast`, `mlir`, and `mlir-affine`: `mlir-llvm` (dump after the LLVM-dialect lowering), `llvm` (translate and print LLVM IR), and `jit` (compile and run `main`). The actions are ordered, so each one runs every pass stage before it (section 3.3).
 - `-opt` — enable the Toy-level optimizations (inlining, shape inference, canonicalization, CSE — which `mlir-affine` and beyond run anyway), the affine loop fusion/scalar replacement cleanups, and `-O3` in the LLVM pipeline used by `-emit=llvm` and `-emit=jit` (section 3).
 - `-x mlir` (or a `.mlir` extension) — parse the input as MLIR instead of Toy source.

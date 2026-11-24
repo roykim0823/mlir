@@ -9,7 +9,8 @@
 # The commands are read from README.md itself: every ```bash block, in order,
 # except the build block (its first command after cd is cmake) and file excerpts (a ***label*** line above
 # the fence). The README marks each block's output with the same number, e.g.
-# "Real output [7]:". Build the chapter first (standalone, see the top-level README).
+# "Real output [7]:". The commands call ./build/toyc-chN, the chapter's standalone
+# build (see the README's Build and Run section), so build the chapter first.
 set -uo pipefail
 # This file lives in toy/; each chapter has a symlink ChN/examples.sh -> ../examples.sh.
 # $0 is the path it was invoked by, so cd'ing to its directory selects the chapter.
@@ -75,6 +76,13 @@ if [[ ${1:-} == -l || ${1:-} == --list ]]; then
     printf '[%2s] %-5s %s\n' "${nums[$i]}" "$id" "$first"
   done
   exit 0
+fi
+
+# The README commands call the standalone build; say so instead of failing on each one.
+ch=${PWD##*/Ch}
+if [[ ! -x build/toyc-ch$ch ]]; then
+  echo "error: build/toyc-ch$ch not found — build the chapter first: cmake -S . -B build -G Ninja && cmake --build build (README, Build and Run)" >&2
+  exit 2
 fi
 
 if [[ $# -eq 0 ]]; then

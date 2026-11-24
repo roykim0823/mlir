@@ -854,7 +854,7 @@ These are core transformations through always-available hooks (`getCanonicalizat
 
 ## 5. Build and Run
 
-The superbuild (`toy/build.sh`, `toy/run.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 3 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — a second TableGen rule for the DRR patterns — is in appendix D.
+The superbuild (`toy/build.sh`, `CMakePresets.json`) is documented once in the top-level [README](../README.md#the-build-system). This section builds and runs Chapter 3 on its own, from the chapter directory. What the chapter's `CMakeLists.txt` adds — a second TableGen rule for the DRR patterns — is in appendix D.
 
 Every command in this README is numbered by its output (**[1]**–**[34]**). After building, `./examples.sh` runs them all, printing each command followed by its output and exit status; `./examples.sh 2` runs only command [2], and `./examples.sh -l` lists them (appendix E).
 
